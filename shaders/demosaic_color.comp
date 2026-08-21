@@ -35,6 +35,34 @@ layout(push_constant) uniform Params
     uint pad5;
 } params;
 
+const float kTargetAtGreenRow[25] = float[](
+    0.0F, 0.0F, 0.0625F, 0.0F, 0.0F,
+    0.0F, -0.125F, 0.0F, -0.125F, 0.0F,
+    -0.125F, 0.5F, 0.625F, 0.5F, -0.125F,
+    0.0F, -0.125F, 0.0F, -0.125F, 0.0F,
+    0.0F, 0.0F, 0.0625F, 0.0F, 0.0F);
+
+const float kTargetAtGreenColumn[25] = float[](
+    0.0F, 0.0F, -0.125F, 0.0F, 0.0F,
+    0.0F, -0.125F, 0.5F, -0.125F, 0.0F,
+    0.0625F, 0.0F, 0.625F, 0.0F, 0.0625F,
+    0.0F, -0.125F, 0.5F, -0.125F, 0.0F,
+    0.0F, 0.0F, -0.125F, 0.0F, 0.0F);
+
+const float kGreenAtRedBlue[25] = float[](
+    0.0F, 0.0F, -0.125F, 0.0F, 0.0F,
+    0.0F, 0.0F, 0.25F, 0.0F, 0.0F,
+    -0.125F, 0.25F, 0.5F, 0.25F, -0.125F,
+    0.0F, 0.0F, 0.25F, 0.0F, 0.0F,
+    0.0F, 0.0F, -0.125F, 0.0F, 0.0F);
+
+const float kTargetAtOppositeColor[25] = float[](
+    0.0F, 0.0F, -0.1875F, 0.0F, 0.0F,
+    0.0F, 0.25F, 0.0F, 0.25F, 0.0F,
+    -0.1875F, 0.0F, 0.75F, 0.0F, -0.1875F,
+    0.0F, 0.25F, 0.0F, 0.25F, 0.0F,
+    0.0F, 0.0F, -0.1875F, 0.0F, 0.0F);
+
 uint channelAt(uint x, uint y)
 {
     const bool xOdd = (x & 1u) != 0u;
@@ -51,14 +79,18 @@ uint channelAt(uint x, uint y)
     }
 }
 
-float sampleAtLinear(uint linearIndex)
+vec2 sampleHalfPair(uint linearIndex)
 {
     const uint clamped = min(linearIndex, params.sampleCount - 1u);
     const uint pairIndex = clamped >> 1U;
     const uint packedIn = inPairs[pairIndex];
-    return (clamped & 1u) == 0u
-               ? unpackHalf2x16(packedIn).x
-               : unpackHalf2x16(packedIn).y;
+    return unpackHalf2x16(packedIn);
+}
+
+float sampleAtLinear(uint linearIndex)
+{
+    const vec2 pair = sampleHalfPair(linearIndex);
+    return (linearIndex & 1u) == 0u ? pair.x : pair.y;
 }
 
 // Replicate-clamped fetch with signed coordinates so neighborhood offsets
@@ -89,69 +121,24 @@ float baselinePixel(uint x, uint y, uint targetChannel)
     return sum / float(count);
 }
 
-void loadMhcKernel(uint x, uint y, uint targetChannel, out float k[25])
-{
-    // `out` parameters are not zero-initialized; every unused tap must be
-    // zeroed explicitly.
-    for (uint i = 0u; i < 25u; ++i) {
-        k[i] = 0.0F;
-    }
-
-    const uint center = channelAt(x, y);
-
-    if (center == 1u || center == 2u) {
-        const uint nx = x + 1u < params.width ? x + 1u : (x > 0u ? x - 1u : x);
-        if (channelAt(nx, y) == targetChannel) {
-            // Row-aligned gradient kernel (horizontal neighbors are the
-            // target chroma).
-            k[2]  =  0.0625F;
-            k[6]  = -0.125F;  k[8]  = -0.125F;
-            k[10] = -0.125F;
-            k[11] =  0.5F;    k[12] =  0.625F; k[13] = 0.5F;
-            k[14] = -0.125F;
-            k[16] = -0.125F;  k[18] = -0.125F;
-            k[22] =  0.0625F;
-        } else {
-            // Column-aligned variant (transposed).
-            k[2]  = -0.125F;
-            k[6]  = -0.125F;  k[7]  =  0.5F;  k[8]  = -0.125F;
-            k[10] =  0.0625F; k[12] =  0.625F; k[14] = 0.0625F;
-            k[16] = -0.125F;  k[17] =  0.5F;  k[18] = -0.125F;
-            k[22] = -0.125F;
-        }
-        return;
-    }
-
-    if (targetChannel == 1u) {
-        // Green at an R/B site: symmetric cross.
-        k[2]  = -0.125F;
-        k[7]  =  0.25F;  k[9]  =  0.25F;
-        k[10] = -0.125F; k[11] =  0.25F; k[12] = 0.5F; k[13] = 0.25F;
-        k[14] = -0.125F;
-        k[17] =  0.25F;
-        k[22] = -0.125F;
-        return;
-    }
-
-    // Opposite chroma at an R/B site: symmetric diagonal.
-    k[2]  = -0.1875F;
-    k[6]  =  0.25F;  k[8]  =  0.25F;
-    k[10] = -0.1875F; k[12] = 0.75F; k[14] = -0.1875F;
-    k[16] =  0.25F;  k[18] =  0.25F;
-    k[22] = -0.1875F;
-}
-
 float mhcPixel(uint x, uint y, uint targetChannel)
 {
-    float k[25];
-    loadMhcKernel(x, y, targetChannel, k);
-
     float sum = 0.0F;
-    uint index = 0U;
     for (uint dy = 0u; dy < 5u; ++dy) {
         for (uint dx = 0u; dx < 5u; ++dx) {
-            const float weight = k[index];
-            index++;
+            const uint index = dy * 5u + dx;
+            float weight = 0.0F;
+            if ((channelAt(x, y) == 1u || channelAt(x, y) == 2u)) {
+                const uint nx =
+                    x + 1u < params.width ? x + 1u : (x > 0u ? x - 1u : x);
+                weight = channelAt(nx, y) == targetChannel
+                             ? kTargetAtGreenRow[index]
+                             : kTargetAtGreenColumn[index];
+            } else if (targetChannel == 1u) {
+                weight = kGreenAtRedBlue[index];
+            } else {
+                weight = kTargetAtOppositeColor[index];
+            }
             if (weight != 0.0F) {
                 sum += weight *
                        sampleClamped(int(x) + int(dx) - 2,
