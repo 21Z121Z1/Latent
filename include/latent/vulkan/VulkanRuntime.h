@@ -4,6 +4,8 @@
 
 #include <string>
 
+#include <volk.h>
+
 namespace latent::vulkan {
 
 struct RuntimeAvailability {
@@ -23,6 +25,12 @@ public:
 
     [[nodiscard]] static bool available();
     [[nodiscard]] static const DeviceCaps& deviceCaps();
+
+    // Raw handles for executor layers; valid while available() is true.
+    [[nodiscard]] static VkInstance instanceHandle();
+    [[nodiscard]] static VkPhysicalDevice physicalDeviceHandle();
+    [[nodiscard]] static VkDevice deviceHandle();
+    [[nodiscard]] static std::uint32_t computeQueueFamily();
 
     static void shutdown();
 };

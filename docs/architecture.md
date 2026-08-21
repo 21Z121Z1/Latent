@@ -151,13 +151,34 @@ The actual `vkGetAndroidHardwareBufferPropertiesANDROID` probe and import
 remain Android-device milestones: this layer defines the decision recipes and
 capability ground truth they will consume.
 
+## First differential Vulkan kernel (implemented)
+
+`shaders/sensor_preprocess.comp` + `vulkan/ComputeRunner` +
+`vulkan/SensorPreprocessKernel` deliver the K1a pointwise chain as the first
+production kernel with a full differential harness:
+
+- fused black-level subtraction, white normalization, bilinear lens-shading
+  gain, and white-balance gain; FP32 math throughout, IEEE binary16 storage
+  via core `packHalf2x16` (no 16-bit-storage extension required);
+- SPIR-V compiled at build time by a pinned FetchContent glslang;
+- `imaging/Half.h` provides bit-identical RNE half conversion for CPU-side
+  expectations, verified against 111 golden vectors including subnormals,
+  overflow-to-infinity, and ties-to-even cases;
+- differential test across four CFA patterns, odd extents, padded pair tails,
+  LSC on/off, and sub-black samples: every sample within tolerance, zero
+  NaNs, negative values preserved below black, and >=99.5% bit-exact
+  (observed 100% on MoltenVK; drivers may break exact ties differently, which
+  is precisely why the article mandates tolerance budgets);
+- runs for real in CI against Mesa lavapipe and locally against MoltenVK;
+  skips gracefully without any Vulkan loader.
+
 ## Near-term milestones
 
 1. Android NDK capture contracts and metadata decoder tests using recorded metadata fixtures.
 2. ~~DNG-style color-calibration model and tested camera -> XYZ D50 -> D60/AP1 transform.~~ (done)
 3. ~~Reference defect correction, LSC, and noise-profile propagation.~~ (done)
 4. ~~Vulkan loader/device-capability adapter plus canonical RAW ingress buffer.~~ (done)
-5. First differential Vulkan kernels: black/normalize/LSC/WB + demosaic/color transform.
+5. ~~First differential Vulkan kernels: black/normalize/LSC/WB~~ (pointwise chain done) + demosaic/color transform kernels.
 6. Scene analysis and independent SDR/HDR render branches.
 7. libultrahdr integration from explicit SDR/HDR renditions.
 8. RawBurst temporal model, alignment, robust merge, and memory-lifetime analysis.
