@@ -1,12 +1,15 @@
 #include "latent/backend/Backend.h"
 #include "latent/graph/ImagingIR.h"
 #include "latent/imaging/ColorScience.h"
+#include "latent/imaging/RawPacking.h"
 #include "latent/reference/Demosaic.h"
 #include "latent/reference/DngColor.h"
 #include "latent/reference/NoisePropagation.h"
 #include "latent/reference/RawNormalize.h"
 #include "latent/reference/SensorLinearOps.h"
 #include "latent/vulkan/DeviceCaps.h"
+#include "latent/vulkan/IngressPlan.h"
+#include "latent/vulkan/VulkanRuntime.h"
 
 #include <algorithm>
 #include <array>
@@ -1229,6 +1232,296 @@ void testPropagatedNoiseDefaultsAndGating() {
           "propagation must be disableable by configuration");
 }
 
+void packRaw10Row(const std::vector<std::uint16_t>& pixels, std::vector<std::uint8_t>& out) {
+    std::size_t i = 0U;
+    while (i + 4U <= pixels.size()) {
+        const auto p0 = pixels[i];
+        const auto p1 = pixels[i + 1U];
+        const auto p2 = pixels[i + 2U];
+        const auto p3 = pixels[i + 3U];
+        out.push_back(static_cast<std::uint8_t>(p0 >> 2U));
+        out.push_back(static_cast<std::uint8_t>(p1 >> 2U));
+        out.push_back(static_cast<std::uint8_t>(p2 >> 2U));
+        out.push_back(static_cast<std::uint8_t>(p3 >> 2U));
+        out.push_back(static_cast<std::uint8_t>((p0 & 0x3U) |
+                                                ((p1 & 0x3U) << 2U) |
+                                                ((p2 & 0x3U) << 4U) |
+                                                ((p3 & 0x3U) << 6U)));
+        i += 4U;
+    }
+    const std::size_t remaining = pixels.size() - i;
+    for (std::size_t k = 0; k < remaining; ++k) {
+        out.push_back(static_cast<std::uint8_t>(pixels[i + k] >> 2U));
+    }
+    if (remaining > 0U) {
+        std::uint32_t lsb = 0U;
+        for (std::size_t k = 0; k < remaining; ++k) {
+            lsb |= (pixels[i + k] & 0x3U) << (2U * k);
+        }
+        out.push_back(static_cast<std::uint8_t>(lsb));
+    }
+}
+
+void packRaw12Row(const std::vector<std::uint16_t>& pixels, std::vector<std::uint8_t>& out) {
+    std::size_t i = 0U;
+    while (i + 2U <= pixels.size()) {
+        const auto p0 = pixels[i];
+        const auto p1 = pixels[i + 1U];
+        out.push_back(static_cast<std::uint8_t>(p0 >> 4U));
+        out.push_back(static_cast<std::uint8_t>(p1 >> 4U));
+        out.push_back(static_cast<std::uint8_t>((p0 & 0xFU) | ((p1 & 0xFU) << 4U)));
+        i += 2U;
+    }
+    if (pixels.size() - i == 1U) {
+        out.push_back(static_cast<std::uint8_t>(pixels[i] >> 4U));
+        out.push_back(static_cast<std::uint8_t>(pixels[i] & 0xFU));
+    }
+}
+
+void testRawPackingGoldenVectors() {
+    using namespace latent::imaging;
+
+    // RAW10 group formula pinned byte-for-byte: pixels {0x123, 0x256, 0x38A,
+    // 0x3FF} -> bytes {0x48, 0x95, 0xE2, 0xFF, 0xEB}.
+    {
+        std::vector<std::uint8_t> packed;
+        packRaw10Row({0x123U, 0x256U, 0x38AU, 0x3FFU}, packed);
+        const std::array<std::uint8_t, 5> expected{0x48U, 0x95U, 0xE2U, 0xFFU, 0xEBU};
+        check(packed == std::vector<std::uint8_t>(expected.begin(), expected.end()),
+              "RAW10 packing must match the MIPI/Android group formula");
+    }
+
+    // RAW12 pair formula: pixels {0xABC, 0x147} -> bytes {0xAB, 0x14, 0x7C}.
+    {
+        std::vector<std::uint8_t> packed;
+        packRaw12Row({0xABCU, 0x147U}, packed);
+        const std::array<std::uint8_t, 3> expected{0xABU, 0x14U, 0x7CU};
+        check(packed == std::vector<std::uint8_t>(expected.begin(), expected.end()),
+              "RAW12 packing must match the MIPI/Android pair formula");
+    }
+
+    PackedRawLayout layout{};
+    layout.extent = {4, 1};
+    layout.packing = RawPacking::Raw10;
+    layout.rowStrideBytes = 5U;
+    const std::array<std::uint8_t, 5> bytes{0x48U, 0x95U, 0xE2U, 0xFFU, 0xEBU};
+    const auto samples = unpackPackedRaw(
+        layout, bytes.data(), static_cast<std::uint64_t>(bytes.size()));
+    check(samples.size() == 4U, "unpacked sample count must equal the extent");
+    checkNear(static_cast<float>(samples[0]), static_cast<float>(0x123U), 0.0F,
+              "RAW10 pixel 0 golden value");
+    checkNear(static_cast<float>(samples[1]), static_cast<float>(0x256U), 0.0F,
+              "RAW10 pixel 1 golden value");
+    checkNear(static_cast<float>(samples[2]), static_cast<float>(0x38AU), 0.0F,
+              "RAW10 pixel 2 golden value");
+    checkNear(static_cast<float>(samples[3]), static_cast<float>(0x3FFU), 0.0F,
+              "RAW10 pixel 3 golden value");
+
+    PackedRawLayout raw16{};
+    raw16.extent = {3, 1};
+    raw16.packing = RawPacking::Raw16;
+    raw16.rowStrideBytes = 6U;
+    const std::array<std::uint8_t, 6> leBytes{0x34U, 0x12U, 0x78U, 0x56U, 0xCDU, 0xABU};
+    const auto raw16Samples = unpackPackedRaw(
+        raw16, leBytes.data(), static_cast<std::uint64_t>(leBytes.size()));
+    check(raw16Samples[0] == 0x1234U && raw16Samples[1] == 0x5678U &&
+              raw16Samples[2] == 0xABCDU,
+          "RAW16 must decode little-endian samples");
+}
+
+void testRawPackingRoundTrip() {
+    using namespace latent::imaging;
+
+    std::mt19937 rng(777U);
+
+    for (const auto packing : {RawPacking::Raw10, RawPacking::Raw12}) {
+        const std::uint16_t maxValue =
+            packing == RawPacking::Raw10 ? 1023U : 4095U;
+        std::uniform_int_distribution<std::uint32_t> sampleRange(0U, maxValue);
+
+        for (std::uint32_t width = 1U; width <= 9U; ++width) {
+            std::vector<std::uint16_t> pixels(width);
+            for (auto& pixel : pixels) {
+                pixel = static_cast<std::uint16_t>(sampleRange(rng));
+            }
+
+            std::vector<std::uint8_t> packed;
+            if (packing == RawPacking::Raw10) {
+                packRaw10Row(pixels, packed);
+            } else {
+                packRaw12Row(pixels, packed);
+            }
+            const auto minStride = minRowStrideBytes({width, 1U}, packing);
+            check(packed.size() == minStride,
+                  "packed row size must equal ceil(width * bpp / 8)");
+
+            PackedRawLayout layout{};
+            layout.extent = {width, 2U};
+            layout.packing = packing;
+            layout.rowStrideBytes = minStride + 3U;
+
+            std::vector<std::uint8_t> buffer(
+                static_cast<std::size_t>(layout.rowStrideBytes * 2U), 0xA5U);
+            std::copy(packed.begin(), packed.end(), buffer.begin());
+            std::copy(packed.begin(), packed.end(),
+                      buffer.begin() + layout.rowStrideBytes);
+
+            const auto unpacked =
+                unpackPackedRaw(layout, buffer.data(),
+                                static_cast<std::uint64_t>(buffer.size()));
+
+            bool rowsMatch = true;
+            for (std::uint32_t row = 0; row < 2U; ++row) {
+                for (std::uint32_t x = 0; x < width; ++x) {
+                    rowsMatch = rowsMatch &&
+                                unpacked[static_cast<std::size_t>(row) * width + x] ==
+                                    pixels[x];
+                }
+            }
+            check(rowsMatch,
+                  "pack/unpack round trip must be identity across partial groups");
+        }
+    }
+}
+
+void testRawPackingValidation() {
+    using namespace latent::imaging;
+
+    check(minRowStrideBytes({4U, 1U}, RawPacking::Raw10) == 5U,
+          "RAW10 stride minimum for four pixels is five bytes");
+    check(minRowStrideBytes({5U, 1U}, RawPacking::Raw10) == 7U,
+          "RAW10 trailing partial group still occupies ceil(width*10/8) bytes");
+    check(minRowStrideBytes({3U, 1U}, RawPacking::Raw12) == 5U,
+          "RAW12 odd widths round up to a full nibble byte");
+
+    PackedRawLayout ok{};
+    ok.extent = {4U, 2U};
+    ok.packing = RawPacking::Raw10;
+    ok.rowStrideBytes = 8U;
+    std::vector<std::uint8_t> buffer(16U, 0U);
+    check(validatePackedRawLayout(ok, buffer.data(),
+                                  static_cast<std::uint64_t>(buffer.size()))
+              .valid,
+          "valid layout with row padding must validate");
+
+    PackedRawLayout smallStride = ok;
+    smallStride.rowStrideBytes = 4U;
+    check(!validatePackedRawLayout(smallStride, buffer.data(),
+                                   static_cast<std::uint64_t>(buffer.size()))
+               .valid,
+          "row stride below the packed row width must be rejected");
+
+    // Required minimum is rowStride * (height - 1) + packedRowWidth = 13.
+    check(validatePackedRawLayout(ok, buffer.data(), 13U).valid,
+          "buffer exactly matching the layout requirement must validate");
+    check(!validatePackedRawLayout(ok, buffer.data(), 12U).valid,
+          "buffer smaller than the layout requires must be rejected");
+
+    PackedRawLayout emptyExtent = ok;
+    emptyExtent.extent = {0U, 2U};
+    check(!validatePackedRawLayout(emptyExtent, nullptr, 0U).valid,
+          "zero extents must be rejected");
+
+    bool rejected = false;
+    try {
+        PackedRawLayout bad = ok;
+        bad.rowStrideBytes = 2U;
+        static_cast<void>(
+            unpackPackedRaw(bad, buffer.data(),
+                            static_cast<std::uint64_t>(buffer.size())));
+    } catch (const std::invalid_argument&) {
+        rejected = true;
+    }
+    check(rejected, "unpack must reject layouts that fail validation");
+}
+
+void testIngressDecisionTable() {
+    using namespace latent::imaging;
+    using namespace latent::vulkan;
+
+    DeviceCaps caps{};
+    caps.apiVersion = {1U, 1U, 0U};
+    caps.computeQueue = true;
+    caps.storageBuffer = true;
+    caps.commonStorageImages = true;
+    caps.timestampQueries = true;
+
+    IngressRequest request{};
+    request.buffer.format = kAhbFormatRaw10;
+    request.packing = RawPacking::Raw10;
+
+    auto decision = planIngress(caps, request);
+    check(decision.path == IngressPath::PortableCopy,
+          "without the AHB extension ingress must use the portable copy");
+    check(decision.sharing == SharingGuarantee::None,
+          "portable copy cannot claim any sharing guarantee");
+
+    caps.androidHardwareBufferExternalMemory = true;
+    decision = planIngress(caps, request);
+    check(decision.path == IngressPath::PortableCopy,
+          "camera RAW must default to the portable unpack baseline");
+    check(decision.requiresRuntimeFormatProbe,
+          "camera RAW decisions should recommend an advisory runtime probe");
+    check(!decision.externalFormatExpected,
+          "Bayer RAW must not be routed through the external-format sampler path");
+
+    request.buffer.format = kAhbFormatRawPrivate;
+    decision = planIngress(caps, request);
+    check(decision.path == IngressPath::Unsupported,
+          "RAW_PRIVATE must stay unsupported without a device profile");
+
+    request.buffer.format = kAhbFormatYuv420_888;
+    decision = planIngress(caps, request);
+    check(decision.path == IngressPath::DirectImportCandidate &&
+              decision.externalFormatExpected && decision.requiresRuntimeFormatProbe,
+          "YUV must be a direct-import candidate through the YCbCr sampler path");
+
+    request.buffer.format = kAhbFormatBlob;
+    request.buffer.usage = kAhbUsageGpuDataBuffer;
+    decision = planIngress(caps, request);
+    check(decision.path == IngressPath::DirectImportCandidate &&
+              !decision.requiresRuntimeFormatProbe,
+          "BLOB with GPU_DATA_BUFFER imports as VkBuffer memory");
+
+    request.buffer.usage = 0U;
+    decision = planIngress(caps, request);
+    check(decision.path == IngressPath::Unsupported,
+          "BLOB without GPU_DATA_BUFFER usage must not import");
+
+    DeviceCaps legacy{};
+    legacy.apiVersion = {1U, 0U, 0U};
+    decision = planIngress(legacy, request);
+    check(decision.path == IngressPath::Unsupported,
+          "devices below the production baseline must reject ingress entirely");
+}
+
+#ifdef LATENT_ENABLE_VULKAN_RUNTIME
+void testVulkanRuntimeSmoke() {
+    const auto availability = latent::vulkan::VulkanRuntime::tryInitialize();
+    if (!availability.loaderAvailable) {
+        std::cout << "vulkan loader unavailable; runtime smoke test skipped\n";
+        return;
+    }
+
+    const auto& caps = latent::vulkan::VulkanRuntime::deviceCaps();
+    if (availability.instanceCreated && availability.deviceCreated) {
+        const auto assessment = latent::vulkan::assessProductionSupport(caps);
+        check(assessment.support != latent::vulkan::ProductionSupport::Unsupported,
+              "an initialized device must satisfy its own baseline assessment");
+        check(caps.computeQueue, "initialized runtime must report its compute queue");
+        check(latent::vulkan::isAtLeast(caps.apiVersion, 1U, 1U),
+              "device creation requires requesting Vulkan 1.1");
+    } else {
+        std::cout << "vulkan device unavailable (" << availability.detail
+                  << "); capability-only smoke completed\n";
+    }
+
+    latent::vulkan::VulkanRuntime::shutdown();
+    check(!latent::vulkan::VulkanRuntime::available(),
+          "shutdown must release the runtime");
+}
+#endif
+
 }  // namespace
 
 int main() {
@@ -1264,6 +1557,13 @@ int main() {
         testPropagatedSigmaAnalyticCases();
         testMonteCarloNoisePropagation();
         testPropagatedNoiseDefaultsAndGating();
+        testRawPackingGoldenVectors();
+        testRawPackingRoundTrip();
+        testRawPackingValidation();
+        testIngressDecisionTable();
+#ifdef LATENT_ENABLE_VULKAN_RUNTIME
+        testVulkanRuntimeSmoke();
+#endif
     } catch (const std::exception& error) {
         std::cerr << "UNCAUGHT EXCEPTION: " << error.what() << '\n';
         return EXIT_FAILURE;

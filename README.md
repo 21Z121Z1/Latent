@@ -45,6 +45,20 @@ The third slice adds the pre-demosaic stages and uncertainty tracking:
   per-pixel sigma query on `SceneFrame` and verified by Monte Carlo
   simulation.
 
+## Vulkan ingress adapter
+
+The fourth slice prepares GPU execution with a strict testability split:
+
+- MIPI/Android RAW10/RAW12 unpacking into a canonical uint16 buffer, with
+  byte-exact golden vectors, round trips across partial groups, and stride
+  handling;
+- an ingress decision table mapping device capabilities onto direct-import
+  candidates vs the portable-copy baseline (camera RAW never assumes
+  zero-copy);
+- a volk-based runtime capability adapter that fills `DeviceCaps` from real
+  Vulkan queries and degrades gracefully without a GPU; CI exercises it
+  against SwiftShader.
+
 ## License
 
 Apache-2.0. See [`LICENSE`](LICENSE).

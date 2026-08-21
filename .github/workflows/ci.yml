@@ -13,9 +13,23 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+      - name: Install software Vulkan driver (Mesa lavapipe)
+        run: |
+          sudo apt-get update -qq
+          if ! sudo apt-get install -y -qq libvulkan1 mesa-vulkan-drivers; then
+            echo "lavapipe installation failed; runtime smoke tests will skip gracefully"
+          fi
+          ls -la /usr/share/vulkan/icd.d/ || true
       - name: Configure
         run: cmake -S . -B build -DLATENT_BUILD_TESTS=ON -DLATENT_STRICT_WARNINGS=ON
       - name: Build
         run: cmake --build build --parallel
       - name: Test
-        run: ctest --test-dir build --output-on-failure
+        run: ctest --test-dir build --output-on-failure --verbose
+
+      - name: Configure (no Vulkan runtime)
+        run: cmake -S . -B build-novk -DLATENT_BUILD_TESTS=ON -DLATENT_ENABLE_VULKAN_RUNTIME=OFF
+      - name: Build (no Vulkan runtime)
+        run: cmake --build build-novk --parallel
+      - name: Test (no Vulkan runtime)
+        run: ctest --test-dir build-novk --output-on-failure

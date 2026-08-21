@@ -120,12 +120,43 @@ lens shading, color matrix, scene scale) verifies predictions against
 empirical reconstruction spread: median error ~3%, p95 ~9%, and
 reconstruction unbiasedness within sampling noise.
 
+## Vulkan ingress adapter (implemented)
+
+`imaging/RawPacking` + `vulkan/IngressPlan` + `vulkan/VulkanRuntime`
+implement milestone 4 with a strict testability split:
+
+- **Canonical RAW ingress (pure logic, fully tested on CPU)**: MIPI/Android
+  RAW10 (4-in-5 bytes) and RAW12 (2-in-3 bytes) group-layout unpacking to
+  canonical little-endian uint16 samples at native depth, byte-exact golden
+  vectors, pack/unpack round trips across partial groups and widths 1..9,
+  row-stride padding handling, and layout validation.
+- **Ingress decision table (pure logic)**: `planIngress()` maps device
+  capabilities plus an AHardwareBuffer descriptor onto
+  DirectImportCandidate / PortableCopy / Unsupported. Camera RAW defaults to
+  the portable unpack baseline even when the AHB extension exists;
+  RAW_PRIVATE is unsupported without a device profile; YUV routes through the
+  external-format/YCbCr sampler path; BLOB+GPU_DATA_BUFFER imports as
+  VkBuffer memory. Every decision records which of the three zero-copy
+  metrics it can honestly claim.
+- **Runtime capability adapter**: volk-based dynamic loading with graceful
+  degradation at every step (loader -> instance -> physical device -> device).
+  Real queries populate the DeviceCaps record: separate FP16 storage vs
+  arithmetic, timeline semaphores, synchronization2, subgroup stage/operation
+  checks via Vulkan11Properties, descriptor indexing, float controls (core in
+  1.2), integer dot product / cooperative matrix extension presence, and AHB
+  external memory availability. A CI job installs SwiftShader so the runtime
+  smoke test exercises real driver queries; without any ICD the test skips.
+
+The actual `vkGetAndroidHardwareBufferPropertiesANDROID` probe and import
+remain Android-device milestones: this layer defines the decision recipes and
+capability ground truth they will consume.
+
 ## Near-term milestones
 
 1. Android NDK capture contracts and metadata decoder tests using recorded metadata fixtures.
 2. ~~DNG-style color-calibration model and tested camera -> XYZ D50 -> D60/AP1 transform.~~ (done)
 3. ~~Reference defect correction, LSC, and noise-profile propagation.~~ (done)
-4. Vulkan loader/device-capability adapter plus canonical RAW ingress buffer.
+4. ~~Vulkan loader/device-capability adapter plus canonical RAW ingress buffer.~~ (done)
 5. First differential Vulkan kernels: black/normalize/LSC/WB + demosaic/color transform.
 6. Scene analysis and independent SDR/HDR render branches.
 7. libultrahdr integration from explicit SDR/HDR renditions.
