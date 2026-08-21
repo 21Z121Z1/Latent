@@ -1,6 +1,7 @@
 #include "latent/reference/RawNormalize.h"
 
 #include <algorithm>
+#include <initializer_list>
 #include <stdexcept>
 
 namespace latent::imaging {
@@ -54,17 +55,28 @@ namespace latent::reference {
 
 namespace {
 
-const imaging::MetadataValue<imaging::BlackLevel>* selectBlackMetadata(const imaging::RawFrame& frame) {
-    if (frame.opticalBlack.usable()) return &frame.opticalBlack;
-    if (frame.dynamicBlack.usable()) return &frame.dynamicBlack;
-    if (frame.staticBlack.usable()) return &frame.staticBlack;
+template <typename T>
+const imaging::MetadataValue<T>* selectByTrust(
+    std::initializer_list<const imaging::MetadataValue<T>*> candidates) {
+    for (const auto* candidate : candidates) {
+        if (candidate->value.has_value() && candidate->validity == imaging::MetadataValidity::Valid) {
+            return candidate;
+        }
+    }
+    for (const auto* candidate : candidates) {
+        if (candidate->value.has_value() && candidate->validity == imaging::MetadataValidity::Suspect) {
+            return candidate;
+        }
+    }
     return nullptr;
 }
 
+const imaging::MetadataValue<imaging::BlackLevel>* selectBlackMetadata(const imaging::RawFrame& frame) {
+    return selectByTrust<imaging::BlackLevel>({&frame.opticalBlack, &frame.dynamicBlack, &frame.staticBlack});
+}
+
 const imaging::MetadataValue<float>* selectWhiteMetadata(const imaging::RawFrame& frame) {
-    if (frame.dynamicWhite.usable()) return &frame.dynamicWhite;
-    if (frame.staticWhite.usable()) return &frame.staticWhite;
-    return nullptr;
+    return selectByTrust<float>({&frame.dynamicWhite, &frame.staticWhite});
 }
 
 std::size_t channelIndex(imaging::CfaChannel channel) {

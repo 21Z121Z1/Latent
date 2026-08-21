@@ -63,6 +63,52 @@ void testMetadataPriorityAndNegativePreservation() {
               "sensor normalization must use selected black/white levels");
 }
 
+void testMetadataTrustBeatsSourcePriority() {
+    auto raw = makeRaw4x4();
+    raw.opticalBlack.validity = latent::imaging::MetadataValidity::Suspect;
+    const auto normalized = latent::reference::normalizeRaw(raw);
+    check(normalized.levels.blackSource == latent::imaging::MetadataSource::DynamicCaptureResult,
+          "valid dynamic black must outrank suspect optical-black metadata");
+}
+
+void testReferenceDomainChangesMustBeExplicit() {
+    using namespace latent;
+    graph::ImagingGraph graph;
+
+    imaging::ImageType sensor{};
+    sensor.extent = {8, 8};
+    sensor.layout = imaging::PixelLayout::Bayer;
+    sensor.colorModel = imaging::ColorModel::SensorCfa;
+    sensor.primaries = imaging::Primaries::SensorNative;
+    sensor.whitePoint = imaging::WhitePoint::SensorNative;
+    sensor.reference = imaging::ReferenceDomain::Sensor;
+    sensor.range = imaging::RangeSemantics::SensorReferenceNormalized;
+
+    imaging::ImageType scene{};
+    scene.extent = {8, 8};
+
+    const auto raw = graph.addInput("raw", sensor);
+    const auto badScene = graph.addOperation({
+        graph::OperationKind::ColorTransform, "undeclared-domain-change", {raw}, scene,
+        graph::AccessPattern::Point, 0, 0, true, true, false, false});
+    static_cast<void>(badScene);
+    check(!graph.validate().valid,
+          "sensor-to-scene transitions must explicitly declare reference-domain changes");
+}
+
+void testInvalidReconstructionConfigIsRejected() {
+    const auto raw = makeRaw4x4();
+    latent::reference::ReconstructionConfig config{};
+    config.whiteBalanceGains[0] = 0.0F;
+    bool rejected = false;
+    try {
+        static_cast<void>(latent::reference::reconstructSingleRaw(raw, config));
+    } catch (const std::invalid_argument&) {
+        rejected = true;
+    }
+    check(rejected, "non-positive white-balance gains must be rejected");
+}
+
 void testSceneValuesRemainUnbounded() {
     auto raw = makeRaw4x4();
     raw.storage.pixels[5] = 1200;
@@ -196,9 +242,12 @@ void testVulkanCapabilityBaseline() {
 int main() {
     try {
         testMetadataPriorityAndNegativePreservation();
+        testMetadataTrustBeatsSourcePriority();
         testSceneValuesRemainUnbounded();
         testSceneScaleChangesStoredCoordinates();
         testImageTypeValidation();
+        testReferenceDomainChangesMustBeExplicit();
+        testInvalidReconstructionConfigIsRejected();
         testGraphFusionStopsAtReduction();
         testVulkanCapabilityBaseline();
     } catch (const std::exception& error) {

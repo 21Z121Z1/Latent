@@ -108,11 +108,18 @@ struct TypeValidation {
         if (type.range != RangeSemantics::Unbounded) {
             return {false, "scene-referred images must use unbounded range semantics"};
         }
+        if (!type.allowNegative) {
+            return {false, "scene-referred images must permit negative coordinates"};
+        }
     }
 
-    if (type.reference == ReferenceDomain::Sensor &&
-        type.range == RangeSemantics::EncodedDisplay) {
-        return {false, "sensor-referred images cannot use display-encoded range semantics"};
+    if (type.reference == ReferenceDomain::Sensor) {
+        if (type.transfer != TransferFunction::Linear) {
+            return {false, "sensor-referred images must be linear"};
+        }
+        if (type.range == RangeSemantics::EncodedDisplay) {
+            return {false, "sensor-referred images cannot use display-encoded range semantics"};
+        }
     }
 
     if (type.reference == ReferenceDomain::Display &&

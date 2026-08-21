@@ -51,12 +51,18 @@ GraphValidation ImagingGraph::validate() const {
                 "operation '" + op.descriptor.name + "' is temporal but has non-temporal access pattern");
         }
 
-        if (op.descriptor.changesReferenceDomain && !op.descriptor.inputs.empty()) {
+        if (!op.descriptor.inputs.empty()) {
             const auto& inputType = values_.at(op.descriptor.inputs.front()).type;
-            if (inputType.reference == op.descriptor.outputType.reference) {
+            const bool domainActuallyChanges = inputType.reference != op.descriptor.outputType.reference;
+            if (op.descriptor.changesReferenceDomain && !domainActuallyChanges) {
                 result.valid = false;
                 result.errors.push_back(
                     "operation '" + op.descriptor.name + "' declares a reference-domain change without changing domain");
+            }
+            if (!op.descriptor.changesReferenceDomain && domainActuallyChanges) {
+                result.valid = false;
+                result.errors.push_back(
+                    "operation '" + op.descriptor.name + "' changes reference domain without declaring it");
             }
         }
     }
