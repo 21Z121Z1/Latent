@@ -16,7 +16,7 @@ The first implementation slice establishes:
 - a Vulkan capability model where Vulkan 1.1 compute is the baseline and AHardwareBuffer/FP16 features are optional fast paths;
 - differential-friendly CTest coverage and CI.
 
-It intentionally does **not** claim that AHardwareBuffer import, burst reconstruction, production Vulkan kernels, or Ultra HDR encoding are implemented yet.
+It intentionally does **not** claim that AHardwareBuffer import, burst reconstruction, complete SDR/HDR rendering, or Ultra HDR encoding are implemented yet.
 
 ## Color science and demosaic
 
@@ -68,6 +68,23 @@ The fifth slice executes real GPU work with a closed verification loop:
 - a minimal compute executor that CI exercises against Mesa lavapipe;
 - a differential test proving every output sample matches the FP32 reference
   within one fp16 ulp, with bit-exactness reported per case.
+
+## Fused demosaic and scene-color kernel
+
+The sixth slice extends GPU execution to the RAW-to-scene boundary:
+
+- a fused neighborhood kernel that consumes the FP16 Bayer output of the
+  preprocess kernel, performs either deterministic box-average or
+  Malvar-He-Cutler demosaic, applies the camera-to-scene color matrix in
+  FP32, scales the explicit scene coordinate, and stores packed RGBA16F;
+- FP32 accumulation for all interpolation and color cancellation-sensitive
+  math while retaining the compact FP16 storage contract;
+- preservation of unbounded and negative scene coordinates before any
+  display-referred rendering decision;
+- a six-case differential suite covering all CFA patterns, odd and extreme
+  aspect-ratio extents, both demosaic methods, and lens shading on/off,
+  with zero-NaN, sign-preservation, median/p99 relative-error, and scaled
+  absolute-error gates.
 
 ## License
 

@@ -172,13 +172,37 @@ production kernel with a full differential harness:
 - runs for real in CI against Mesa lavapipe and locally against MoltenVK;
   skips gracefully without any Vulkan loader.
 
+## Fused demosaic/color Vulkan kernel (implemented)
+
+`shaders/demosaic_color.comp` + `vulkan/DemosaicColorKernel` deliver the K1b
+RAW-to-scene chain as the first production neighborhood kernel:
+
+- consumes the canonical FP16 Bayer bit patterns produced by K1a;
+- implements both reference demosaic methods with the same replicate-clamped
+  borders and exact Malvar-He-Cutler coefficients as `reference/Demosaic`;
+- performs interpolation and camera-to-scene matrix multiplication in FP32,
+  then stores packed RGBA16F so scene values remain unbounded and may be
+  negative before rendering;
+- applies the caller's row-major color matrix and explicit scalar scene
+  scale as separate semantic inputs;
+- enables `VK_KHR_portability_subset` only when the physical device reports
+  it, keeping conformant Android drivers on the normal path;
+- is differentially tested against the CPU reference after both kernels have
+  crossed their FP16 storage boundaries: four CFA patterns, odd/extreme
+  extents, both methods, and LSC on/off. Gates require zero NaNs, sign
+  preservation, median error <=0.2%, p99 <=1%, and a pixel-scale absolute
+  tolerance for near-cancellation outputs.
+
+This is still execution of a single-RAW reconstruction graph, not burst
+reconstruction, denoising, rendering, or an Android capture integration.
+
 ## Near-term milestones
 
 1. Android NDK capture contracts and metadata decoder tests using recorded metadata fixtures.
 2. ~~DNG-style color-calibration model and tested camera -> XYZ D50 -> D60/AP1 transform.~~ (done)
 3. ~~Reference defect correction, LSC, and noise-profile propagation.~~ (done)
 4. ~~Vulkan loader/device-capability adapter plus canonical RAW ingress buffer.~~ (done)
-5. ~~First differential Vulkan kernels: black/normalize/LSC/WB~~ (pointwise chain done) + demosaic/color transform kernels.
+5. ~~First differential Vulkan kernels: black/normalize/LSC/WB plus demosaic/color transform.~~ (done)
 6. Scene analysis and independent SDR/HDR render branches.
 7. libultrahdr integration from explicit SDR/HDR renditions.
 8. RawBurst temporal model, alignment, robust merge, and memory-lifetime analysis.

@@ -53,8 +53,19 @@ if(LATENT_ENABLE_VULKAN_RUNTIME)
         COMMENT "Compiling sensor_preprocess.comp to SPIR-V header"
         VERBATIM
     )
+    add_custom_command(
+        OUTPUT "${GENERATED_SHADER_DIR}/demosaic_color_spv.h"
+        COMMAND $<TARGET_FILE:glslang-standalone> -V --target-env vulkan1.1
+                --vn demosaic_color_spv
+                -o "${GENERATED_SHADER_DIR}/demosaic_color_spv.h"
+                "${CMAKE_CURRENT_SOURCE_DIR}/shaders/demosaic_color.comp"
+        DEPENDS "shaders/demosaic_color.comp" glslang-standalone
+        COMMENT "Compiling demosaic_color.comp to SPIR-V header"
+        VERBATIM
+    )
     add_custom_target(latent_shaders
-        DEPENDS "${GENERATED_SHADER_DIR}/sensor_preprocess_spv.h")
+        DEPENDS "${GENERATED_SHADER_DIR}/sensor_preprocess_spv.h"
+                "${GENERATED_SHADER_DIR}/demosaic_color_spv.h")
 endif()
 
 set(LATENT_CORE_SOURCES
@@ -76,6 +87,7 @@ if(LATENT_ENABLE_VULKAN_RUNTIME)
         src/vulkan/VulkanRuntime.cpp
         src/vulkan/ComputeRunner.cpp
         src/vulkan/SensorPreprocessKernel.cpp
+        src/vulkan/DemosaicColorKernel.cpp
     )
 endif()
 

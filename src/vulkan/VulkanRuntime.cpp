@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cstring>
 #include <volk.h>
+#include <vulkan/vulkan_beta.h>
 
 namespace latent::vulkan {
 namespace {
@@ -195,6 +196,9 @@ RuntimeAvailability VulkanRuntime::tryInitialize() {
             runtime.physicalDevice, nullptr, &extensionCount, extensions.data());
     }
 
+    const bool portabilitySubset = hasExtension(
+        VK_KHR_PORTABILITY_SUBSET_EXTENSION_NAME, extensions);
+
     DeviceCaps caps{};
     caps.apiVersion = decodeApiVersion(properties.properties.apiVersion);
     caps.computeQueue = true;
@@ -244,8 +248,16 @@ RuntimeAvailability VulkanRuntime::tryInitialize() {
     deviceInfo.pQueueCreateInfos = &queueInfo;
     deviceInfo.enabledLayerCount = 0U;
     deviceInfo.ppEnabledLayerNames = nullptr;
-    deviceInfo.enabledExtensionCount = 0U;
-    deviceInfo.ppEnabledExtensionNames = nullptr;
+    std::vector<const char*> enabledDeviceExtensions;
+    if (portabilitySubset) {
+        enabledDeviceExtensions.push_back(
+            VK_KHR_PORTABILITY_SUBSET_EXTENSION_NAME);
+    }
+    deviceInfo.enabledExtensionCount =
+        static_cast<std::uint32_t>(enabledDeviceExtensions.size());
+    deviceInfo.ppEnabledExtensionNames =
+        enabledDeviceExtensions.empty() ? nullptr
+                                        : enabledDeviceExtensions.data();
     deviceInfo.pEnabledFeatures = nullptr;
 
     runtime.caps = caps;

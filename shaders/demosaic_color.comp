@@ -1,0 +1,206 @@
+#version 450
+
+// Latent K1b fused kernel: FP16 gained Bayer -> demosaic (Malvar-He-Cutler
+// or baseline box average) -> camera-to-scene color matrix -> scene scale ->
+// packed FP16 RGBA. All accumulation in FP32; storage in IEEE binary16 via
+// packHalf2x16. Kernel coefficient tables mirror the CPU reference exactly
+// (row-major 5x5, replicate-clamped borders).
+
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+layout(std430, set = 0, binding = 0) readonly buffer InBayer
+{
+    uint inPairs[];   // two little-endian fp16 samples per uint32
+};
+
+layout(std430, set = 0, binding = 1) writeonly buffer OutScene
+{
+    uint outRgba[];   // two uint32 per pixel: (R,G) then (B,0)
+};
+
+layout(push_constant) uniform Params
+{
+    uint sampleCount;
+    uint width;
+    uint height;
+    uint cfaPattern;
+    uint demosaicMethod;      // 0 = baseline box average, 1 = Malvar-He-Cutler
+    uint pad0;
+    uint pad1;
+    uint pad2;
+    float matrixValues[9];    // camera->scene, column-major
+    float sceneScale;
+    uint pad3;
+    uint pad4;
+    uint pad5;
+} params;
+
+uint channelAt(uint x, uint y)
+{
+    const bool xOdd = (x & 1u) != 0u;
+    const bool yOdd = (y & 1u) != 0u;
+    switch (params.cfaPattern) {
+        case 0u:  // RGGB
+            return yOdd ? (xOdd ? 3u : 2u) : (xOdd ? 1u : 0u);
+        case 1u:  // GRBG
+            return yOdd ? (xOdd ? 2u : 3u) : (xOdd ? 0u : 1u);
+        case 2u:  // GBRG
+            return yOdd ? (xOdd ? 2u : 0u) : (xOdd ? 3u : 1u);
+        default:  // BGGR
+            return yOdd ? (xOdd ? 0u : 2u) : (xOdd ? 1u : 3u);
+    }
+}
+
+float sampleAtLinear(uint linearIndex)
+{
+    const uint clamped = min(linearIndex, params.sampleCount - 1u);
+    const uint pairIndex = clamped >> 1U;
+    const uint packedIn = inPairs[pairIndex];
+    return (clamped & 1u) == 0u
+               ? unpackHalf2x16(packedIn).x
+               : unpackHalf2x16(packedIn).y;
+}
+
+// Replicate-clamped fetch with signed coordinates so neighborhood offsets
+// never wrap near the borders.
+float sampleClamped(int x, int y)
+{
+    const uint cx = uint(min(max(x, 0), int(params.width) - 1));
+    const uint cy = uint(min(max(y, 0), int(params.height) - 1));
+    return sampleAtLinear(cy * params.width + cx);
+}
+
+float baselinePixel(uint x, uint y, uint targetChannel)
+{
+    float sum = 0.0F;
+    uint count = 0U;
+    for (int dy = -1; dy <= 1; ++dy) {
+        for (int dx = -1; dx <= 1; ++dx) {
+            const uint xx = uint(min(max(int(x) + dx, 0),
+                                     int(params.width) - 1));
+            const uint yy = uint(min(max(int(y) + dy, 0),
+                                     int(params.height) - 1));
+            if (channelAt(xx, yy) == targetChannel) {
+                sum += sampleClamped(int(xx), int(yy));
+                count++;
+            }
+        }
+    }
+    return sum / float(count);
+}
+
+void loadMhcKernel(uint x, uint y, uint targetChannel, out float k[25])
+{
+    // `out` parameters are not zero-initialized; every unused tap must be
+    // zeroed explicitly.
+    for (uint i = 0u; i < 25u; ++i) {
+        k[i] = 0.0F;
+    }
+
+    const uint center = channelAt(x, y);
+
+    if (center == 1u || center == 2u) {
+        const uint nx = x + 1u < params.width ? x + 1u : (x > 0u ? x - 1u : x);
+        if (channelAt(nx, y) == targetChannel) {
+            // Row-aligned gradient kernel (horizontal neighbors are the
+            // target chroma).
+            k[2]  =  0.0625F;
+            k[6]  = -0.125F;  k[8]  = -0.125F;
+            k[10] = -0.125F;
+            k[11] =  0.5F;    k[12] =  0.625F; k[13] = 0.5F;
+            k[14] = -0.125F;
+            k[16] = -0.125F;  k[18] = -0.125F;
+            k[22] =  0.0625F;
+        } else {
+            // Column-aligned variant (transposed).
+            k[2]  = -0.125F;
+            k[6]  = -0.125F;  k[7]  =  0.5F;  k[8]  = -0.125F;
+            k[10] =  0.0625F; k[12] =  0.625F; k[14] = 0.0625F;
+            k[16] = -0.125F;  k[17] =  0.5F;  k[18] = -0.125F;
+            k[22] = -0.125F;
+        }
+        return;
+    }
+
+    if (targetChannel == 1u) {
+        // Green at an R/B site: symmetric cross.
+        k[2]  = -0.125F;
+        k[7]  =  0.25F;  k[9]  =  0.25F;
+        k[10] = -0.125F; k[11] =  0.25F; k[12] = 0.5F; k[13] = 0.25F;
+        k[14] = -0.125F;
+        k[17] =  0.25F;
+        k[22] = -0.125F;
+        return;
+    }
+
+    // Opposite chroma at an R/B site: symmetric diagonal.
+    k[2]  = -0.1875F;
+    k[6]  =  0.25F;  k[8]  =  0.25F;
+    k[10] = -0.1875F; k[12] = 0.75F; k[14] = -0.1875F;
+    k[16] =  0.25F;  k[18] =  0.25F;
+    k[22] = -0.1875F;
+}
+
+float mhcPixel(uint x, uint y, uint targetChannel)
+{
+    float k[25];
+    loadMhcKernel(x, y, targetChannel, k);
+
+    float sum = 0.0F;
+    uint index = 0U;
+    for (uint dy = 0u; dy < 5u; ++dy) {
+        for (uint dx = 0u; dx < 5u; ++dx) {
+            const float weight = k[index];
+            index++;
+            if (weight != 0.0F) {
+                sum += weight *
+                       sampleClamped(int(x) + int(dx) - 2,
+                                     int(y) + int(dy) - 2);
+            }
+        }
+    }
+    return sum;
+}
+
+void main()
+{
+    const uint pixel = gl_GlobalInvocationID.x;
+    if (pixel >= params.width * params.height) {
+        return;
+    }
+
+    const uint y = pixel / params.width;
+    const uint x = pixel % params.width;
+    const uint center = channelAt(x, y);
+    const uint centerRgb =
+        center == 0u ? 0u : (center == 3u ? 2u : 1u);
+
+    float cameraRgb[3];
+    for (uint target = 0u; target < 3u; ++target) {
+        if (target == centerRgb) {
+            // Known site: the sample passes through untouched.
+            cameraRgb[target] = sampleAtLinear(pixel);
+        } else if (params.demosaicMethod == 1u) {
+            cameraRgb[target] = mhcPixel(x, y, target);
+        } else {
+            cameraRgb[target] = baselinePixel(x, y, target);
+        }
+    }
+
+    // Column-major storage lets each output channel read a contiguous
+    // triple; the explicit expansion mirrors Matrix3f::apply exactly.
+    float sceneValue[3];
+    for (uint target = 0u; target < 3u; ++target) {
+        sceneValue[target] =
+            params.matrixValues[target * 3u + 0u] * cameraRgb[0] +
+            params.matrixValues[target * 3u + 1u] * cameraRgb[1] +
+            params.matrixValues[target * 3u + 2u] * cameraRgb[2];
+    }
+
+    const float scale = params.sceneScale;
+    const uint base = pixel * 2u;
+    outRgba[base + 0u] = packHalf2x16(
+        vec2(sceneValue[0] * scale, sceneValue[1] * scale));
+    outRgba[base + 1u] = packHalf2x16(
+        vec2(sceneValue[2] * scale, 0.0F));
+}

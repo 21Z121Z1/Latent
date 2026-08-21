@@ -12,6 +12,7 @@
 #include "latent/vulkan/IngressPlan.h"
 #ifdef LATENT_ENABLE_VULKAN_RUNTIME
 #include "latent/vulkan/ComputeRunner.h"
+#include "latent/vulkan/DemosaicColorKernel.h"
 #include "latent/vulkan/SensorPreprocessKernel.h"
 #include "latent/vulkan/VulkanRuntime.h"
 #endif
@@ -1502,6 +1503,188 @@ void testIngressDecisionTable() {
 }
 
 #ifdef LATENT_ENABLE_VULKAN_RUNTIME
+void testVulkanDemosaicColorDifferential() {
+    using namespace latent::imaging;
+    using namespace latent::reference;
+    using namespace latent::vulkan;
+
+    std::string detail;
+    auto runner = ComputeRunner::tryCreate(&detail);
+    if (runner == nullptr) {
+        std::cout << "compute runner unavailable (" << detail
+                  << "); demosaic differential test skipped\n";
+        return;
+    }
+
+    SensorPreprocessKernel preprocess(*runner);
+    DemosaicColorKernel demosaic(*runner);
+
+    std::mt19937 rng(20260823U);
+    std::uniform_int_distribution<std::uint32_t> codeDist(0U, 1023U);
+
+    struct Case {
+        CfaPattern cfa;
+        Extent extent;
+        DemosaicMethod method;
+        bool useLsc;
+    };
+    const std::array<Case, 6> cases{{
+        {CfaPattern::RGGB, {64U, 48U}, DemosaicMethod::MalvarHeCutler2004, true},
+        {CfaPattern::GRBG, {61U, 41U}, DemosaicMethod::BaselineBoxAverage, true},
+        {CfaPattern::GBRG, {33U, 17U}, DemosaicMethod::MalvarHeCutler2004, false},
+        {CfaPattern::BGGR, {40U, 40U}, DemosaicMethod::BaselineBoxAverage, false},
+        {CfaPattern::RGGB, {256U, 2U}, DemosaicMethod::MalvarHeCutler2004, true},
+        {CfaPattern::GRBG, {17U, 64U}, DemosaicMethod::MalvarHeCutler2004, true},
+    }};
+
+    const std::array<float, 4> blackLevels{80.0F, 84.0F, 84.0F, 88.0F};
+    const std::array<float, 4> wbGains{1.6F, 1.0F, 1.05F, 1.35F};
+    const std::array<float, 9> cameraToScene{
+        1.0F, -0.05F, 0.02F,
+        -0.01F, 1.0F, 0.03F,
+        0.01F, -0.02F, 1.0F,
+    };
+    const float sceneScale = 1.5F;
+
+    for (const auto& testCase : cases) {
+        PreprocessParams preParams{};
+        preParams.extent = testCase.extent;
+        preParams.cfa = testCase.cfa;
+        preParams.whiteLevel = 1000.0F;
+        preParams.black = blackLevels;
+        preParams.wbGains = wbGains;
+        if (testCase.useLsc) {
+            preParams.lensShading = makeGradientShadingMap(3, 3);
+        }
+
+        std::vector<std::uint16_t> canonical(
+            static_cast<std::size_t>(preParams.extent.pixelCount()));
+        for (auto& code : canonical) {
+            code = static_cast<std::uint16_t>(codeDist(rng));
+        }
+
+        const auto bayerBits = preprocess.run(preParams, canonical);
+
+        DemosaicColorParams params{};
+        params.extent = testCase.extent;
+        params.cfa = testCase.cfa;
+        params.demosaicMethod = testCase.method;
+        params.cameraToScene = cameraToScene;
+        params.sceneScale = sceneScale;
+
+        const auto rgbaBits = demosaic.run(params, bayerBits);
+        check(rgbaBits.size() ==
+                  static_cast<std::size_t>(params.extent.pixelCount()) * 4U,
+              "demosaic kernel output must be RGBA16F shaped");
+
+        // CPU reference: consume the SAME FP16 Bayer the kernel consumed.
+        SensorLinearFrameF32 gained{};
+        gained.extent = testCase.extent;
+        gained.cfa = testCase.cfa;
+        gained.samples.resize(bayerBits.size());
+        for (std::size_t i = 0; i < bayerBits.size(); ++i) {
+            gained.samples[i] = halfBitsToFloat(bayerBits[i]);
+        }
+        const auto cpuRgb = demosaicSensorLinear(
+            gained, {1.0F, 1.0F, 1.0F, 1.0F}, testCase.method);
+
+        // Per the article's error-budget doctrine, relative error is only
+        // meaningful away from cancellation; near-zero coordinates (matrix
+        // rows cancelling across similar camera channels) are gated with an
+        // absolute tolerance scaled by the pixel's dynamic range instead.
+        std::vector<double> conditionedRelativeErrors;
+        std::size_t nanCount = 0U;
+        std::size_t outOfTolerance = 0U;
+        std::size_t signMismatch = 0U;
+        double worstAbsolute = 0.0;
+
+        const auto cameraAt = [&cpuRgb](std::uint32_t p, std::uint32_t c) {
+            return cpuRgb.rgb[static_cast<std::size_t>(p) * 3U + c];
+        };
+
+        for (std::uint32_t p = 0; p < params.extent.pixelCount(); ++p) {
+            float sceneExpectedRgb[3];
+            float pixelMagnitude = 0.0F;
+            for (std::uint32_t c = 0; c < 3U; ++c) {
+                float value = 0.0F;
+                for (std::uint32_t j = 0; j < 3U; ++j) {
+                    value += cameraToScene[static_cast<std::size_t>(c) * 3U +
+                                           j] *
+                             cameraAt(p, j);
+                }
+                sceneExpectedRgb[c] = value * sceneScale;
+                pixelMagnitude =
+                    std::max(pixelMagnitude, std::fabs(value));
+            }
+
+            for (std::uint32_t c = 0; c < 3U; ++c) {
+                const float sceneExpected = sceneExpectedRgb[c];
+
+                const auto actualBits =
+                    rgbaBits[static_cast<std::size_t>(p) * 4U + c];
+                if (((actualBits & 0x7C00U) == 0x7C00U) &&
+                    ((actualBits & 0x03FFU) != 0U)) {
+                    ++nanCount;
+                    continue;
+                }
+
+                const float actualValue = halfBitsToFloat(actualBits);
+                const float absoluteError =
+                    std::fabs(actualValue - sceneExpected);
+
+                // Two chained FP16 storages plus FP32 accumulation:
+                // a few ulps of the pixel scale bound every legitimate
+                // difference.
+                const float absoluteTolerance =
+                    std::max(pixelMagnitude * 4.0e-3F, 1.0e-4F);
+                if (absoluteError > absoluteTolerance) {
+                    ++outOfTolerance;
+                    worstAbsolute = std::max(
+                        worstAbsolute,
+                        static_cast<double>(absoluteError));
+                }
+
+                if (std::fabs(sceneExpected) >
+                    0.05F * pixelMagnitude + 1.0e-3F) {
+                    conditionedRelativeErrors.push_back(
+                        static_cast<double>(absoluteError) /
+                        static_cast<double>(
+                            std::fabs(sceneExpected)));
+                } else if ((sceneExpected < 0.0F) !=
+                           (actualValue < 0.0F) &&
+                           std::fabs(sceneExpected) > absoluteTolerance) {
+                    ++signMismatch;
+                }
+            }
+        }
+
+        check(conditionedRelativeErrors.size() > 1000U,
+              "demosaic differential must evaluate a meaningful pixel count");
+        check(nanCount == 0U, "demosaic kernel must never emit NaN");
+        check(outOfTolerance == 0U,
+              "every demosaic sample must stay within its scaled absolute "
+              "tolerance (worst " +
+                  std::to_string(worstAbsolute) + ")");
+        check(signMismatch == 0U,
+              "negative scene coordinates must preserve their sign");
+
+        std::sort(conditionedRelativeErrors.begin(),
+                  conditionedRelativeErrors.end());
+        const double median =
+            conditionedRelativeErrors[conditionedRelativeErrors.size() / 2U];
+        const double p99 = conditionedRelativeErrors
+            [static_cast<std::size_t>(
+                 static_cast<double>(conditionedRelativeErrors.size()) *
+                 0.99)];
+        check(median <= 2.0e-3,
+              "median relative error must stay under 0.2% (got " +
+                  std::to_string(median * 100.0) + "%)");
+        check(p99 <= 1.0e-2,
+              "p99 relative error must stay under 1% (got " +
+                  std::to_string(p99 * 100.0) + "%)");
+    }
+}
+
 void testVulkanPreprocessDifferential() {
     using namespace latent::imaging;
     using namespace latent::reference;
@@ -1869,6 +2052,7 @@ int main() {
         testIngressDecisionTable();
 #ifdef LATENT_ENABLE_VULKAN_RUNTIME
         testVulkanPreprocessDifferential();
+        testVulkanDemosaicColorDifferential();
         testVulkanRuntimeSmoke();
 #endif
     } catch (const std::exception& error) {
