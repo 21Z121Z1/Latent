@@ -6,6 +6,9 @@ option(LATENT_STRICT_WARNINGS "Treat compiler warnings as errors" ON)
 
 add_library(latent_core
     src/graph/ImagingIR.cpp
+    src/imaging/ColorScience.cpp
+    src/reference/DngColor.cpp
+    src/reference/Demosaic.cpp
     src/reference/RawNormalize.cpp
     src/reference/ReferenceReconstruct.cpp
     src/vulkan/DeviceCaps.cpp

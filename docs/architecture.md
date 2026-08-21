@@ -52,11 +52,45 @@ Direct AHardwareBuffer import is never a correctness prerequisite. Actual zero-c
 - CCM, burst accumulation, motion/statistics, and other cancellation/reduction-sensitive math: FP32 compute/accumulation.
 - FP16 storage and FP16 arithmetic are queried separately.
 
+## Color science (implemented)
+
+`imaging/ColorScience` and `reference/DngColor` implement the DNG Chapter 6
+camera color model with FP32 reference semantics:
+
+- SMPTE RP 177 derivation of RGB-to-XYZ matrices from primary chromaticities;
+  the derived AP0/AP1 chain is differential-tested against the official
+  ACES AP0<->AP1 transform matrices.
+- Bradford chromatic adaptation, tested against published D65->D50 values.
+- Robertson (1968) xy->CCT using the Wyszecki & Stiles table (with the
+  325-mired correction) exactly as the Adobe DNG SDK does; McCamy's
+  approximation is provided as a cross-check only.
+- Dual-illuminant camera profiles: mired-domain interpolation with clamping,
+  camera-neutral <-> WB-xy conversion (iterative per the DNG spec), and two
+  camera -> XYZ D50 paths: the preferred ForwardMatrix path
+  (`FM * D * inv(AB*CC)`) and the inverse-color-matrix fallback with
+  explicit chromatic adaptation.
+- `XYZ D50 -> linear AP1 (ACEScg)` via Bradford adaptation to the ACES white.
+- Golden-vector tests reproduce the BSD-licensed colour-hdri DNG reference
+  implementation results for a Canon 5D Mark II profile.
+
+## Demosaic (implemented)
+
+`reference/Demosaic` provides:
+
+- `MalvarHeCutler2004`: gradient-corrected linear demosaic with the exact
+  5x5 filters from the 2004 paper, replicate-clamped borders. Golden vectors
+  are generated from the BSD-licensed colour-demosaicing reference.
+- `BaselineBoxAverage`: the original deterministic box-average baseline,
+  retained for differential comparison.
+
+The default reconstruction path is normalize -> MHC demosaic -> DNG color
+model -> SceneFrame (linear AP1, unbounded, negative-preserving).
+
 ## Near-term milestones
 
 1. Android NDK capture contracts and metadata decoder tests using recorded metadata fixtures.
-2. DNG-style color-calibration model and tested camera -> XYZ D50 -> D60/AP1 transform.
-3. Reference defect correction, LSC, and edge-aware demosaic.
+2. ~~DNG-style color-calibration model and tested camera -> XYZ D50 -> D60/AP1 transform.~~ (done)
+3. Reference defect correction, LSC, and noise-profile propagation.
 4. Vulkan loader/device-capability adapter plus canonical RAW ingress buffer.
 5. First differential Vulkan kernels: black/normalize/LSC/WB + demosaic/color transform.
 6. Scene analysis and independent SDR/HDR render branches.

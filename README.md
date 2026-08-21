@@ -16,7 +16,26 @@ The first implementation slice establishes:
 - a Vulkan capability model where Vulkan 1.1 compute is the baseline and AHardwareBuffer/FP16 features are optional fast paths;
 - differential-friendly CTest coverage and CI.
 
-It intentionally does **not** claim that AHardwareBuffer import, burst reconstruction, DNG calibration interpolation, production Vulkan kernels, or Ultra HDR encoding are implemented yet.
+It intentionally does **not** claim that AHardwareBuffer import, burst reconstruction, production Vulkan kernels, or Ultra HDR encoding are implemented yet.
+
+## Color science and demosaic
+
+The second slice adds a tested FP32 color pipeline:
+
+- the DNG Chapter 6 dual-illuminant camera color model (mired interpolation,
+  camera-neutral <-> WB-xy, ForwardMatrix and inverse-color-matrix paths to
+  XYZ D50), differential-tested against BSD-licensed reference
+  implementations and official ACES matrices;
+- Bradford chromatic adaptation and Robertson (1968) correlated-color
+  temperature per the Adobe DNG SDK;
+- `XYZ D50 -> linear AP1/ACEScg` so `SceneFrame` coordinates come from real
+  colorimetry instead of caller-supplied matrices;
+- Malvar-He-Cutler (2004) gradient-corrected demosaic with golden-vector and
+  property tests, alongside the retained box-average baseline.
+
+## License
+
+Apache-2.0. See [`LICENSE`](LICENSE).
 
 ## Build
 
