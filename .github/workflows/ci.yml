@@ -16,12 +16,10 @@ jobs:
       - name: Install software Vulkan driver (Mesa lavapipe)
         run: |
           sudo apt-get update -qq
-          if sudo apt-get install -y -qq libvulkan1 mesa-vulkan-drivers; then
-            echo "VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json" >> "$GITHUB_ENV"
-            echo "VK_DRIVER_FILES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json" >> "$GITHUB_ENV"
-          else
+          if ! sudo apt-get install -y -qq libvulkan1 mesa-vulkan-drivers; then
             echo "lavapipe installation failed; runtime smoke tests will skip gracefully"
           fi
+          ls -la /usr/share/vulkan/icd.d/ || true
       - name: Configure
         run: cmake -S . -B build -DLATENT_BUILD_TESTS=ON -DLATENT_STRICT_WARNINGS=ON
       - name: Build
