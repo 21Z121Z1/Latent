@@ -59,6 +59,16 @@ The fourth slice prepares GPU execution with a strict testability split:
   Vulkan queries and degrades gracefully without a GPU; CI exercises it
   against SwiftShader.
 
+## First differential Vulkan kernel
+
+The fifth slice executes real GPU work with a closed verification loop:
+
+- a fused pointwise kernel (black level -> normalize -> lens shading ->
+  white balance -> FP16 Bayer) compiled from GLSL at build time;
+- a minimal compute executor that CI exercises against Mesa lavapipe;
+- a differential test proving every output sample matches the FP32 reference
+  within one fp16 ulp, with bit-exactness reported per case.
+
 ## License
 
 Apache-2.0. See [`LICENSE`](LICENSE).

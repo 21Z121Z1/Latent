@@ -9,6 +9,7 @@ option(LATENT_ENABLE_VULKAN_RUNTIME
 if(LATENT_ENABLE_VULKAN_RUNTIME)
     include(FetchContent)
     FetchContent_Declare(vulkan_headers
+        GIT_SHALLOW TRUE
         GIT_REPOSITORY https://github.com/KhronosGroup/Vulkan-Headers.git
         GIT_TAG v1.3.299
     )
@@ -16,6 +17,7 @@ if(LATENT_ENABLE_VULKAN_RUNTIME)
     # whose toolchain support is uneven across compilers.
     set(VULKAN_HEADERS_ENABLE_MODULE OFF CACHE BOOL "" FORCE)
     FetchContent_Declare(volk
+        GIT_SHALLOW TRUE
         GIT_REPOSITORY https://github.com/zeux/volk.git
         GIT_TAG 1.3.295
     )
@@ -25,6 +27,34 @@ if(LATENT_ENABLE_VULKAN_RUNTIME)
     set(VULKAN_HEADERS_INSTALL_DIR "${vulkan_headers_SOURCE_DIR}" CACHE PATH ""
         FORCE)
     FetchContent_MakeAvailable(volk)
+
+    # Build-time SPIR-V compilation. ENABLE_OPT=OFF drops the SPIRV-Tools
+    # dependency; our per-target warning flags never reach glslang sources.
+    set(ENABLE_OPT OFF CACHE BOOL "" FORCE)
+    set(ENABLE_HLSL OFF CACHE BOOL "" FORCE)
+    set(ENABLE_GLSLANG_BINARIES ON CACHE BOOL "" FORCE)
+    set(SKIP_GLSLANG_INSTALL ON CACHE BOOL "" FORCE)
+    FetchContent_Declare(glslang
+        GIT_SHALLOW TRUE
+        GIT_REPOSITORY https://github.com/KhronosGroup/glslang.git
+        GIT_TAG 16.5.0
+    )
+    FetchContent_MakeAvailable(glslang)
+
+    set(GENERATED_SHADER_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated_shaders")
+    file(MAKE_DIRECTORY "${GENERATED_SHADER_DIR}")
+    add_custom_command(
+        OUTPUT "${GENERATED_SHADER_DIR}/sensor_preprocess_spv.h"
+        COMMAND $<TARGET_FILE:glslang-standalone> -V --target-env vulkan1.1
+                --vn sensor_preprocess_spv
+                -o "${GENERATED_SHADER_DIR}/sensor_preprocess_spv.h"
+                "${CMAKE_CURRENT_SOURCE_DIR}/shaders/sensor_preprocess.comp"
+        DEPENDS "shaders/sensor_preprocess.comp" glslang-standalone
+        COMMENT "Compiling sensor_preprocess.comp to SPIR-V header"
+        VERBATIM
+    )
+    add_custom_target(latent_shaders
+        DEPENDS "${GENERATED_SHADER_DIR}/sensor_preprocess_spv.h")
 endif()
 
 set(LATENT_CORE_SOURCES
@@ -42,10 +72,20 @@ set(LATENT_CORE_SOURCES
 )
 
 if(LATENT_ENABLE_VULKAN_RUNTIME)
-    list(APPEND LATENT_CORE_SOURCES src/vulkan/VulkanRuntime.cpp)
+    list(APPEND LATENT_CORE_SOURCES
+        src/vulkan/VulkanRuntime.cpp
+        src/vulkan/ComputeRunner.cpp
+        src/vulkan/SensorPreprocessKernel.cpp
+    )
 endif()
 
 add_library(latent_core ${LATENT_CORE_SOURCES})
+
+if(LATENT_ENABLE_VULKAN_RUNTIME)
+    add_dependencies(latent_core latent_shaders)
+    target_include_directories(latent_core PRIVATE
+        "${GENERATED_SHADER_DIR}")
+endif()
 
 add_library(latent::core ALIAS latent_core)
 
@@ -59,6 +99,11 @@ if(LATENT_ENABLE_VULKAN_RUNTIME)
 endif()
 
 target_compile_features(latent_core PUBLIC cxx_std_20)
+
+# The reference backend must be bit-reproducible across compilers; GNU
+# contracts FP expressions into FMA by default, which shifts last bits.
+target_compile_options(latent_core PRIVATE
+    $<$<CXX_COMPILER_ID:GNU>:-ffp-contract=off>)
 
 if(MSVC)
     target_compile_options(latent_core PRIVATE /W4)
@@ -80,6 +125,8 @@ if(LATENT_BUILD_TESTS)
     if(LATENT_ENABLE_VULKAN_RUNTIME)
         target_compile_definitions(latent_tests PRIVATE LATENT_ENABLE_VULKAN_RUNTIME)
     endif()
+    target_compile_options(latent_tests PRIVATE
+        $<$<CXX_COMPILER_ID:GNU>:-ffp-contract=off>)
     if(MSVC)
         target_compile_options(latent_tests PRIVATE /W4)
         if(LATENT_STRICT_WARNINGS)

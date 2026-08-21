@@ -1,0 +1,128 @@
+#version 450
+
+// Latent K1a pointwise preprocess: canonical RAW -> black/white normalization
+// -> lens shading gain -> white-balance gain -> packed FP16 Bayer.
+// All math in FP32; storage in IEEE binary16 via packHalf2x16 so the kernel
+// needs no 16-bit-storage extensions.
+
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+layout(std430, set = 0, binding = 0) readonly buffer InCanonical
+{
+    uint inPairs[];
+};
+
+layout(std430, set = 0, binding = 1) readonly buffer InLensShading
+{
+    float lscGains[];
+};
+
+layout(std430, set = 0, binding = 2) writeonly buffer OutHalf
+{
+    uint outPairs[];
+};
+
+layout(push_constant) uniform Params
+{
+    uint sampleCount;
+    uint width;
+    uint height;
+    uint cfaPattern;
+    float whiteLevel;
+    vec4 blackLevels;
+    vec4 wbGains;
+    uvec2 lscGrid;
+    uint lscEnabled;
+    uint pad0;
+} params;
+
+uint channelAt(uint x, uint y)
+{
+    const bool xOdd = (x & 1u) != 0u;
+    const bool yOdd = (y & 1u) != 0u;
+    switch (params.cfaPattern) {
+        case 0u:  // RGGB
+            return yOdd ? (xOdd ? 3u : 2u) : (xOdd ? 1u : 0u);
+        case 1u:  // GRBG
+            return yOdd ? (xOdd ? 2u : 3u) : (xOdd ? 0u : 1u);
+        case 2u:  // GBRG
+            return yOdd ? (xOdd ? 2u : 0u) : (xOdd ? 3u : 1u);
+        default:  // BGGR
+            return yOdd ? (xOdd ? 0u : 2u) : (xOdd ? 1u : 3u);
+    }
+}
+
+float lensShadingGainAt(uint x, uint y, uint channel)
+{
+    if (params.lscEnabled == 0u) {
+        return 1.0f;
+    }
+
+    const uint cols = max(params.lscGrid.x, 1u);
+    const uint rows = max(params.lscGrid.y, 1u);
+    const float scaleX =
+        (cols > 1u && params.width > 1u)
+            ? float(cols - 1u) / float(params.width - 1u)
+            : 0.0f;
+    const float scaleY =
+        (rows > 1u && params.height > 1u)
+            ? float(rows - 1u) / float(params.height - 1u)
+            : 0.0f;
+
+    const float gridX = float(x) * scaleX;
+    const float gridY = float(y) * scaleY;
+    const uint gx0 = uint(gridX);
+    const uint gy0 = uint(gridY);
+    const uint gx1 = min(gx0 + 1u, cols - 1u);
+    const uint gy1 = min(gy0 + 1u, rows - 1u);
+    const float fx = gridX - float(gx0);
+    const float fy = gridY - float(gy0);
+
+    const uint c00 = (gy0 * cols + gx0) * 4u + channel;
+    const uint c10 = (gy0 * cols + gx1) * 4u + channel;
+    const uint c01 = (gy1 * cols + gx0) * 4u + channel;
+    const uint c11 = (gy1 * cols + gx1) * 4u + channel;
+
+    const float g00 = lscGains[c00];
+    const float g10 = lscGains[c10];
+    const float g01 = lscGains[c01];
+    const float g11 = lscGains[c11];
+
+    const float top = g00 + (g10 - g00) * fx;
+    const float bottom = g01 + (g11 - g01) * fx;
+    return top + (bottom - top) * fy;
+}
+
+float processSample(uint code, uint linearIndex)
+{
+    const uint y = linearIndex / params.width;
+    const uint x = linearIndex % params.width;
+    const uint channel = channelAt(x, y);
+
+    const float black = params.blackLevels[channel];
+    const float range = params.whiteLevel - black;
+    const float normalized = (float(code) - black) / range;
+
+    const float gain = lensShadingGainAt(x, y, channel);
+    const float shaded = normalized * gain;
+    return shaded * params.wbGains[channel];
+}
+
+void main()
+{
+    const uint pairIndex = gl_GlobalInvocationID.x;
+    const uint base = pairIndex * 2u;
+    if (base >= params.sampleCount) {
+        return;
+    }
+
+    const uint packedIn = inPairs[pairIndex];
+    const float v0 = processSample(packedIn & 0xFFFFu, base);
+
+    float v1 = v0;
+    if (base + 1u < params.sampleCount) {
+        v1 = processSample(packedIn >> 16U, base + 1u);
+    }
+
+    outPairs[pairIndex] = packHalf2x16(vec2(v0, v1));
+}

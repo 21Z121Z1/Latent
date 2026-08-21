@@ -80,6 +80,33 @@ RuntimeAvailability VulkanRuntime::tryInitialize() {
     }
     availability.loaderAvailable = true;
 
+    // Portability drivers (MoltenVK on macOS) are only enumerated when the
+    // application opts in; the extension simply does not exist elsewhere.
+    std::uint32_t instanceExtensionCount = 0U;
+    vkEnumerateInstanceExtensionProperties(
+        nullptr, &instanceExtensionCount, nullptr);
+    std::vector<VkExtensionProperties> instanceExtensions(
+        instanceExtensionCount);
+    if (instanceExtensionCount > 0U) {
+        vkEnumerateInstanceExtensionProperties(
+            nullptr, &instanceExtensionCount, instanceExtensions.data());
+    }
+
+    const bool portabilityEnumeration =
+        std::any_of(instanceExtensions.begin(), instanceExtensions.end(),
+                    [](const auto& entry) {
+                        return std::strcmp(entry.extensionName,
+                                           VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME) == 0;
+                    });
+
+    std::vector<const char*> enabledInstanceExtensions;
+    VkInstanceCreateFlags instanceFlags = 0U;
+    if (portabilityEnumeration) {
+        enabledInstanceExtensions.push_back(
+            VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME);
+        instanceFlags |= VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR;
+    }
+
     VkApplicationInfo application;
     application.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
     application.pNext = nullptr;
@@ -92,12 +119,15 @@ RuntimeAvailability VulkanRuntime::tryInitialize() {
     VkInstanceCreateInfo instanceInfo;
     instanceInfo.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
     instanceInfo.pNext = nullptr;
-    instanceInfo.flags = 0U;
+    instanceInfo.flags = instanceFlags;
     instanceInfo.pApplicationInfo = &application;
     instanceInfo.enabledLayerCount = 0U;
     instanceInfo.ppEnabledLayerNames = nullptr;
-    instanceInfo.enabledExtensionCount = 0U;
-    instanceInfo.ppEnabledExtensionNames = nullptr;
+    instanceInfo.enabledExtensionCount =
+        static_cast<std::uint32_t>(enabledInstanceExtensions.size());
+    instanceInfo.ppEnabledExtensionNames =
+        enabledInstanceExtensions.empty() ? nullptr
+                                          : enabledInstanceExtensions.data();
 
     if (vkCreateInstance(&instanceInfo, nullptr, &runtime.instance) != VK_SUCCESS) {
         volkFinalize();
@@ -241,6 +271,22 @@ bool VulkanRuntime::available() {
 
 const DeviceCaps& VulkanRuntime::deviceCaps() {
     return state().caps;
+}
+
+VkInstance VulkanRuntime::instanceHandle() {
+    return state().instance;
+}
+
+VkPhysicalDevice VulkanRuntime::physicalDeviceHandle() {
+    return state().physicalDevice;
+}
+
+VkDevice VulkanRuntime::deviceHandle() {
+    return state().device;
+}
+
+std::uint32_t VulkanRuntime::computeQueueFamily() {
+    return findComputeQueueFamily(state().physicalDevice);
 }
 
 void VulkanRuntime::shutdown() {
