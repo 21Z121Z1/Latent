@@ -13,9 +13,26 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+      - name: Install SwiftShader (software Vulkan ICD)
+        run: |
+          if wget -q https://github.com/google/swiftshader/releases/download/latest/swiftshader-linux-x64.tar.gz -O /tmp/swiftshader.tar.gz; then
+            mkdir -p /tmp/swiftshader
+            tar xzf /tmp/swiftshader.tar.gz -C /tmp/swiftshader
+            echo "VK_ICD_FILENAMES=/tmp/swiftshader/vk_swiftshader_icd.json" >> "$GITHUB_ENV"
+            echo "VK_DRIVER_FILES=/tmp/swiftshader/vk_swiftshader_icd.json" >> "$GITHUB_ENV"
+          else
+            echo "swiftshader download failed; runtime smoke tests will skip gracefully"
+          fi
       - name: Configure
         run: cmake -S . -B build -DLATENT_BUILD_TESTS=ON -DLATENT_STRICT_WARNINGS=ON
       - name: Build
         run: cmake --build build --parallel
       - name: Test
         run: ctest --test-dir build --output-on-failure
+
+      - name: Configure (no Vulkan runtime)
+        run: cmake -S . -B build-novk -DLATENT_BUILD_TESTS=ON -DLATENT_ENABLE_VULKAN_RUNTIME=OFF
+      - name: Build (no Vulkan runtime)
+        run: cmake --build build-novk --parallel
+      - name: Test (no Vulkan runtime)
+        run: ctest --test-dir build-novk --output-on-failure
