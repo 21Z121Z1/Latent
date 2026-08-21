@@ -10,10 +10,7 @@
 
 namespace latent::reference {
 
-enum class DemosaicMethod : std::uint8_t {
-    BaselineBoxAverage,
-    MalvarHeCutler2004,
-};
+using imaging::DemosaicMethod;
 
 struct RgbImageF32 {
     imaging::Extent extent{};
@@ -37,8 +34,27 @@ struct RgbImageF32 {
     return 0;
 }
 
+struct DemosaicTap {
+    std::uint32_t x = 0;
+    std::uint32_t y = 0;
+    imaging::CfaChannel channel = imaging::CfaChannel::R;
+    float weight = 0.0F;
+};
+
 [[nodiscard]] RgbImageF32 demosaicSensorLinear(
     const SensorLinearFrameF32& frame,
+    const std::array<float, 4>& whiteBalanceGains,
+    DemosaicMethod method);
+
+// Exact linear taps (position offsets, source CFA channels, weights) that the
+// given demosaic method uses to produce one output channel at one pixel.
+// Weights include white-balance gains; identity taps carry weight 1.
+[[nodiscard]] std::vector<DemosaicTap> demosaicTapWeights(
+    const imaging::Extent& extent,
+    imaging::CfaPattern cfa,
+    std::uint32_t x,
+    std::uint32_t y,
+    std::size_t rgbChannel,
     const std::array<float, 4>& whiteBalanceGains,
     DemosaicMethod method);
 

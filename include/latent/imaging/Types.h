@@ -67,6 +67,11 @@ enum class PrecisionClass : std::uint8_t {
     ProductionMixed,
 };
 
+enum class DemosaicMethod : std::uint8_t {
+    BaselineBoxAverage,
+    MalvarHeCutler2004,
+};
+
 struct Extent {
     std::uint32_t width = 0;
     std::uint32_t height = 0;

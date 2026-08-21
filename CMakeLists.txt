@@ -9,8 +9,10 @@ add_library(latent_core
     src/imaging/ColorScience.cpp
     src/reference/DngColor.cpp
     src/reference/Demosaic.cpp
+    src/reference/NoisePropagation.cpp
     src/reference/RawNormalize.cpp
     src/reference/ReferenceReconstruct.cpp
+    src/reference/SensorLinearOps.cpp
     src/vulkan/DeviceCaps.cpp
 )
 

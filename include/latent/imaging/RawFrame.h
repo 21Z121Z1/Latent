@@ -57,6 +57,32 @@ struct BlackLevel {
     std::array<float, 4> cfa{0.0F, 0.0F, 0.0F, 0.0F};
 };
 
+// Per-CFA-channel noise model in raw code units: sigma(x) = sqrt(S*x + O),
+// matching the Android NOISE_PROFILE / DNG NoiseProfile convention.
+struct NoiseModel {
+    std::array<float, 4> shot{0.0F, 0.0F, 0.0F, 0.0F};
+    std::array<float, 4> read{0.0F, 0.0F, 0.0F, 0.0F};
+};
+
+// Android-convention lens shading correction map: a rows x columns grid of
+// per-channel gains [R, Geven, Godd, B], all >= 1.0, row-major, spanning the
+// frame extent in normalized coordinates.
+struct LensShadingMap {
+    std::uint32_t gridColumns = 0;
+    std::uint32_t gridRows = 0;
+    std::vector<float> gains;
+
+    [[nodiscard]] std::uint64_t gainCount() const noexcept {
+        return static_cast<std::uint64_t>(gridColumns) *
+               static_cast<std::uint64_t>(gridRows) * 4U;
+    }
+};
+
+struct DefectPixel {
+    std::uint32_t x = 0;
+    std::uint32_t y = 0;
+};
+
 struct ExposureCalibration {
     float nominalIso = 0.0F;
     std::array<float, 4> effectiveGain{1.0F, 1.0F, 1.0F, 1.0F};
@@ -92,6 +118,10 @@ struct RawFrame {
     MetadataValue<std::array<float, 4>> neutralColorPoint;
     MetadataValue<std::array<float, 4>> colorCorrectionGains;
 
+    MetadataValue<LensShadingMap> lensShading;
+    MetadataValue<NoiseModel> noiseProfile;
+    std::vector<DefectPixel> defects;
+
     ExposureCalibration exposureCalibration{};
 };
 
@@ -102,5 +132,7 @@ struct RawValidation {
 
 [[nodiscard]] CfaChannel cfaChannelAt(CfaPattern pattern, std::uint32_t x, std::uint32_t y) noexcept;
 [[nodiscard]] RawValidation validateRawFrame(const RawFrame& frame);
+[[nodiscard]] RawValidation validateLensShadingMap(const LensShadingMap& map);
+[[nodiscard]] RawValidation validateNoiseModel(const NoiseModel& model);
 
 }  // namespace latent::imaging

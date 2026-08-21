@@ -5,6 +5,7 @@
 #include "latent/imaging/Types.h"
 #include "latent/reference/Demosaic.h"
 #include "latent/reference/DngColor.h"
+#include "latent/reference/SensorLinearOps.h"
 
 #include <array>
 
@@ -15,9 +16,20 @@ enum class ColorPath : std::uint8_t {
     DngProfile,
 };
 
+enum class DefectCorrectionMode : std::uint8_t {
+    Disabled,
+    FromMetadataMap,
+    DetectAndCorrect,
+};
+
 struct ReconstructionConfig {
     DemosaicMethod demosaicMethod = DemosaicMethod::MalvarHeCutler2004;
     ColorPath colorPath = ColorPath::ExplicitMatrix;
+
+    DefectCorrectionMode defectCorrection = DefectCorrectionMode::Disabled;
+    DefectDetectionConfig defectDetection{};
+    bool applyLensShading = false;
+    bool propagateNoise = true;
 
     std::array<float, 4> whiteBalanceGains{1.0F, 1.0F, 1.0F, 1.0F};
     imaging::Matrix3f cameraToAcescg{};

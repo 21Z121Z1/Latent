@@ -3,16 +3,22 @@
 #include "latent/imaging/ColorScience.h"
 #include "latent/reference/Demosaic.h"
 #include "latent/reference/DngColor.h"
+#include "latent/reference/NoisePropagation.h"
 #include "latent/reference/RawNormalize.h"
+#include "latent/reference/SensorLinearOps.h"
 #include "latent/vulkan/DeviceCaps.h"
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <cstdlib>
 #include <exception>
 #include <iostream>
+#include <random>
 #include <string>
+#include <vector>
 
 namespace {
 
@@ -691,6 +697,538 @@ void testEndToEndDngPipelineEquivalence() {
     check(viaDng.sceneScaleEV == 0.3F, "scene scale metadata must survive the DNG path");
 }
 
+void testLensShadingMapValidation() {
+    using namespace latent::imaging;
+
+    LensShadingMap valid{};
+    valid.gridColumns = 3;
+    valid.gridRows = 3;
+    valid.gains.assign(3U * 3U * 4U, 1.0F);
+    check(validateLensShadingMap(valid).valid, "uniform unit-gain map must validate");
+
+    auto emptyGrid = valid;
+    emptyGrid.gridColumns = 0;
+    check(!validateLensShadingMap(emptyGrid).valid, "zero-column grid must be rejected");
+
+    auto wrongCount = valid;
+    wrongCount.gains.pop_back();
+    check(!validateLensShadingMap(wrongCount).valid,
+          "gain count must equal gridColumns * gridRows * 4");
+
+    auto subUnitGain = valid;
+    subUnitGain.gains[5] = 0.9F;
+    check(!validateLensShadingMap(subUnitGain).valid, "gains below 1.0 must be rejected");
+
+    auto nanGain = valid;
+    nanGain.gains[7] = std::nanf("");
+    check(!validateLensShadingMap(nanGain).valid, "non-finite gains must be rejected");
+}
+
+latent::imaging::LensShadingMap makeGradientShadingMap(std::uint32_t columns, std::uint32_t rows) {
+    latent::imaging::LensShadingMap map{};
+    map.gridColumns = columns;
+    map.gridRows = rows;
+    map.gains.resize(static_cast<std::size_t>(columns) * rows * 4U);
+    for (std::uint32_t gy = 0; gy < rows; ++gy) {
+        for (std::uint32_t gx = 0; gx < columns; ++gx) {
+            const float gain =
+                1.0F + 0.2F * static_cast<float>(gx) / static_cast<float>(columns - 1U);
+            const auto base =
+                (static_cast<std::size_t>(gy) * columns + gx) * 4U;
+            for (std::size_t c = 0; c < 4; ++c) {
+                map.gains[base + c] = gain;
+            }
+        }
+    }
+    return map;
+}
+
+void testLensShadingApplication() {
+    using namespace latent::imaging;
+    using namespace latent::reference;
+
+    SensorLinearFrameF32 frame{};
+    frame.extent = {8, 8};
+    frame.cfa = CfaPattern::RGGB;
+    frame.samples.resize(64U);
+    for (std::size_t i = 0; i < frame.samples.size(); ++i) {
+        frame.samples[i] = static_cast<float>(i) * 0.01F;
+    }
+
+    LensShadingMap uniform{};
+    uniform.gridColumns = 1;
+    uniform.gridRows = 1;
+    uniform.gains.assign(4U, 1.5F);
+    const auto uniformResult = applyLensShading(frame, uniform);
+    for (std::size_t i = 0; i < frame.samples.size(); ++i) {
+        checkNear(uniformResult.samples[i], frame.samples[i] * 1.5F, 1.0e-6F,
+                  "uniform lens shading map must scale every sample");
+    }
+
+    const auto gradientMap = makeGradientShadingMap(3, 3);
+    const auto gradientResult = applyLensShading(frame, gradientMap);
+    for (std::uint32_t y = 0; y < 8U; ++y) {
+        for (std::uint32_t x = 0; x < 8U; ++x) {
+            const auto index = static_cast<std::size_t>(y) * 8U + x;
+            const auto expected =
+                frame.samples[index] *
+                lensShadingGainAt(gradientMap, frame.extent, CfaPattern::RGGB, x, y);
+            checkNear(gradientResult.samples[index], expected, 1.0e-6F,
+                      "applyLensShading must match per-pixel gain evaluation");
+        }
+    }
+
+    checkNear(lensShadingGainAt(gradientMap, frame.extent, CfaPattern::RGGB, 0U, 0U),
+              1.0F, 1.0e-6F, "grid corner must reproduce the exact grid gain");
+    checkNear(lensShadingGainAt(gradientMap, frame.extent, CfaPattern::RGGB, 7U, 0U),
+              1.2F, 1.0e-5F, "opposite grid corner must reproduce the exact grid gain");
+    const auto centerGain =
+        lensShadingGainAt(gradientMap, frame.extent, CfaPattern::RGGB, 4U, 4U);
+    checkNear(centerGain, 1.1F + 0.1F * (4.0F * 2.0F / 7.0F - 1.0F), 1.0e-6F,
+              "center gain must bilinearly interpolate between grid columns");
+}
+
+void testDefectCorrection() {
+    using namespace latent::imaging;
+    using namespace latent::reference;
+
+    SensorLinearFrameF32 frame{};
+    frame.extent = {8, 8};
+    frame.cfa = CfaPattern::RGGB;
+    frame.samples.assign(64U, 0.5F);
+
+    const std::size_t deadIndex = 3U * 8U + 3U;
+    frame.samples[deadIndex] = -0.75F;
+
+    const auto corrected = correctDefects(frame, {{3U, 3U}});
+
+    bool neighborsUntouched = true;
+    for (std::size_t i = 0; i < frame.samples.size(); ++i) {
+        if (i == deadIndex) {
+            continue;
+        }
+        neighborsUntouched =
+            neighborsUntouched && corrected.samples[i] == frame.samples[i];
+    }
+    check(neighborsUntouched, "defect correction must not modify non-defect samples");
+
+    const auto channel = cfaChannelAt(CfaPattern::RGGB, 3U, 3U);
+    check(channel == CfaChannel::B, "expected B site at (3,3) in RGGB");
+    checkNear(corrected.samples[deadIndex], 0.5F, 1.0e-6F,
+              "dead pixel must be replaced by the same-channel neighbor median");
+
+    SensorLinearFrameF32 negativeFrame{};
+    negativeFrame.extent = {8, 8};
+    negativeFrame.cfa = CfaPattern::BGGR;
+    negativeFrame.samples.assign(64U, -0.25F);
+    negativeFrame.samples[4U * 8U + 4U] = 2.0F;
+    const auto negativeCorrected = correctDefects(negativeFrame, {{4U, 4U}});
+    checkNear(negativeCorrected.samples[4U * 8U + 4U], -0.25F, 1.0e-6F,
+              "correction must preserve negative scene values");
+
+    bool rejected = false;
+    try {
+        static_cast<void>(correctDefects(frame, {{9U, 3U}}));
+    } catch (const std::invalid_argument&) {
+        rejected = true;
+    }
+    check(rejected, "out-of-bounds defect coordinates must be rejected");
+
+    SensorLinearFrameF32 tiny{};
+    tiny.extent = {2, 2};
+    tiny.cfa = CfaPattern::RGGB;
+    tiny.samples.assign(4U, 0.5F);
+    rejected = false;
+    try {
+        static_cast<void>(correctDefects(tiny, {{0U, 0U}}));
+    } catch (const std::invalid_argument&) {
+        rejected = true;
+    }
+    check(rejected, "defect without same-channel neighbors must be rejected");
+}
+
+void testDefectDetection() {
+    using namespace latent::imaging;
+    using namespace latent::reference;
+
+    SensorLinearFrameF32 frame{};
+    frame.extent = {12, 12};
+    frame.cfa = CfaPattern::GRBG;
+    frame.samples.resize(12U * 12U);
+    for (std::uint32_t y = 0; y < 12U; ++y) {
+        for (std::uint32_t x = 0; x < 12U; ++x) {
+            frame.samples[static_cast<std::size_t>(y) * 12U + x] =
+                0.3F + 0.02F * static_cast<float>(x);
+        }
+    }
+
+    frame.samples[2U * 12U + 5U] = 2.5F;
+    frame.samples[8U * 12U + 9U] = -1.0F;
+
+    DefectDetectionConfig config{};
+    config.enabled = true;
+    config.sigmaMultiplier = 8.0F;
+    config.minAbsoluteDelta = 0.05F;
+
+    const auto candidates = detectDefectCandidates(frame, config, nullptr);
+    check(candidates.size() == 2U, "exactly the two injected defects must be detected");
+    if (candidates.size() == 2U) {
+        check(candidates[0].x == 5U && candidates[0].y == 2U,
+              "hot pixel must be detected in row-major order");
+        check(candidates[1].x == 9U && candidates[1].y == 8U,
+              "dead pixel must be detected in row-major order");
+    }
+
+    const auto roundTrip = correctDefects(frame, candidates);
+    checkNear(roundTrip.samples[2U * 12U + 5U], 0.40F, 1.0e-5F,
+              "corrected hot pixel must equal the same-channel neighbor median");
+    check(detectDefectCandidates(roundTrip, config, nullptr).empty(),
+          "corrected frame must contain no remaining defect candidates");
+
+    DefectDetectionConfig disabled = config;
+    disabled.enabled = false;
+    check(detectDefectCandidates(frame, disabled, nullptr).empty(),
+          "disabled detection must return no candidates");
+
+    NoiseModel noise{};
+    for (std::size_t c = 0; c < 4; ++c) {
+        noise.read[c] = 1.0e6F;
+    }
+    check(detectDefectCandidates(frame, config, &noise).empty(),
+          "huge read noise must suppress detection via the noise-aware threshold");
+}
+
+void testNoiseModelValidationAndTransform() {
+    using namespace latent::imaging;
+    using namespace latent::reference;
+
+    NoiseModel valid{};
+    valid.shot = {0.5F, 0.5F, 0.5F, 0.5F};
+    valid.read = {4.0F, 4.0F, 4.0F, 4.0F};
+    check(validateNoiseModel(valid).valid, "positive noise model must validate");
+
+    auto negative = valid;
+    negative.shot[2] = -0.1F;
+    check(!validateNoiseModel(negative).valid, "negative shot coefficient must be rejected");
+
+    auto nonFinite = valid;
+    nonFinite.read[1] = std::nanf("");
+    check(!validateNoiseModel(nonFinite).valid, "non-finite coefficients must be rejected");
+
+    SelectedRawLevels levels{};
+    levels.black = BlackLevel{{100.0F, 100.0F, 100.0F, 100.0F}};
+    levels.white = 1100.0F;
+
+    const auto normalized = normalizeNoiseModel(valid, levels);
+    for (std::size_t c = 0; c < 4; ++c) {
+        checkNear(normalized.shot[c], 0.0005F, 1.0e-9F,
+                  "normalized shot gain must equal S / (W - B)");
+        checkNear(normalized.read[c], 5.4e-5F, 1.0e-10F,
+                  "normalized read noise must equal (S*B + O) / (W - B)^2");
+    }
+}
+
+void testTapWeightsMirrorDemosaicOutput() {
+    using namespace latent::imaging;
+    using namespace latent::reference;
+
+    SensorLinearFrameF32 frame{};
+    frame.extent = {12, 16};
+    frame.cfa = CfaPattern::GBRG;
+    std::mt19937 rng(1234U);
+    std::uniform_real_distribution<float> signal(0.05F, 0.95F);
+    for (auto& sample : frame.samples) {
+        sample = signal(rng);
+    }
+    frame.samples.resize(static_cast<std::size_t>(frame.extent.pixelCount()));
+    while (frame.samples.size() <
+           static_cast<std::size_t>(frame.extent.pixelCount())) {
+        frame.samples.push_back(signal(rng));
+    }
+
+    const std::array<float, 4> gains{1.2F, 1.0F, 1.05F, 0.95F};
+
+    for (const auto method : {DemosaicMethod::BaselineBoxAverage,
+                              DemosaicMethod::MalvarHeCutler2004}) {
+        const auto rgb = demosaicSensorLinear(frame, gains, method);
+        for (std::uint32_t y = 0; y < frame.extent.height; ++y) {
+            for (std::uint32_t x = 0; x < frame.extent.width; ++x) {
+                for (std::size_t c = 0; c < 3; ++c) {
+                    const auto taps = demosaicTapWeights(
+                        frame.extent, frame.cfa, x, y, c, gains, method);
+                    float reconstructed = 0.0F;
+                    for (const auto& tap : taps) {
+                        reconstructed +=
+                            tap.weight *
+                            frame.samples[static_cast<std::size_t>(tap.y) *
+                                              frame.extent.width +
+                                          tap.x];
+                    }
+                    const auto actual =
+                        rgb.rgb[(static_cast<std::size_t>(y) * frame.extent.width + x) * 3U + c];
+                    checkNear(reconstructed, actual, 2.0e-5F * std::max(1.0F, std::fabs(actual)),
+                              "tap weights must mirror demosaic output");
+                }
+            }
+        }
+    }
+}
+
+void testPropagatedSigmaAnalyticCases() {
+    using namespace latent::imaging;
+    using namespace latent::reference;
+
+    // RGGB pixel (3,3) is a B site; its known channel is B (rgb index 2).
+    PropagatedNoise noise{};
+    noise.valid = true;
+    noise.extent = {8, 8};
+    noise.cfa = CfaPattern::RGGB;
+    noise.demosaicMethod = DemosaicMethod::BaselineBoxAverage;
+    for (std::size_t c = 0; c < 4; ++c) {
+        noise.shot[c] = 0.0F;
+        noise.read[c] = 1.0F;
+    }
+
+    SigmaQuery query{};
+    query.x = 3U;
+    query.y = 3U;
+    query.rgbChannel = 1U;
+    query.sceneValueRgb = {0.5F, 0.5F, 0.5F};
+
+    checkNear(propagatedSigma(noise, query), 0.5F, 1.0e-5F,
+              "read-noise-only baseline G interpolation must give sqrt(1/4)");
+
+    query.rgbChannel = 2U;
+    checkNear(propagatedSigma(noise, query), 1.0F, 1.0e-5F,
+              "known-channel identity tap must carry full variance");
+
+    noise.demosaicMethod = DemosaicMethod::MalvarHeCutler2004;
+    checkNear(propagatedSigma(noise, query), 1.0F, 1.0e-5F,
+              "MHC known-channel identity tap must carry full variance");
+
+    // MHC green interpolation at a B site taps the B center (4/8), four G
+    // axial neighbors (2/8) and four B far-axial samples (-1/8). With WB
+    // gains {1,2,2,1} the per-tap variance weights differ by channel:
+    //   Var = (4/8)^2*1^2 + 4*(2/8)^2*2^2 + 4*(1/8)^2*1^2 = 21/16
+    noise.whiteBalanceGains = {1.0F, 2.0F, 2.0F, 1.0F};
+    query.rgbChannel = 1U;
+    checkNear(propagatedSigma(noise, query), std::sqrt(21.0F / 16.0F), 1.0e-5F,
+              "MHC green sigma must weight each tap by its own channel gain");
+
+    // Baseline G interpolation with the same gains: four G taps of weight
+    // 1/4, each amplified by its channel gain squared.
+    noise.demosaicMethod = DemosaicMethod::BaselineBoxAverage;
+    checkNear(propagatedSigma(noise, query), 1.0F, 1.0e-5F,
+              "baseline G sigma must scale linearly with the WB gain");
+
+    noise.whiteBalanceGains = {1.0F, 1.0F, 1.0F, 1.0F};
+    const auto withoutLsc = propagatedSigma(noise, query);
+    noise.lensShadingApplied = true;
+    noise.lensShading = makeGradientShadingMap(3, 3);
+    const auto withLsc = propagatedSigma(noise, query);
+    check(withLsc > withoutLsc,
+          "lens shading gains must increase propagated sigma");
+}
+
+latent::imaging::RawFrame makeNoisyMonteCarloRaw() {
+    using namespace latent::imaging;
+
+    RawFrame raw{};
+    raw.id = 7U;
+    raw.storage.extent = {32, 32};
+    raw.storage.rowStridePixels = 32U;
+    raw.storage.pixels.resize(32U * 32U);
+    raw.cfa = CfaPattern::RGGB;
+    raw.exposureTimeNs = 10'000'000;
+    raw.sensitivityIso = 100.0F;
+    raw.staticBlack = MetadataValue<BlackLevel>{
+        BlackLevel{{64.0F, 64.0F, 64.0F, 64.0F}},
+        MetadataSource::StaticCharacteristic, MetadataValidity::Valid, 0.9F};
+    raw.staticWhite = MetadataValue<float>{
+        1024.0F, MetadataSource::StaticCharacteristic, MetadataValidity::Valid, 0.9F};
+
+    NoiseModel profile{};
+    for (std::size_t c = 0; c < 4; ++c) {
+        profile.shot[c] = 0.9F;
+        profile.read[c] = 16.0F;
+    }
+    raw.noiseProfile = MetadataValue<NoiseModel>{
+        profile, MetadataSource::MeasuredCalibration, MetadataValidity::Valid, 1.0F};
+
+    raw.lensShading = MetadataValue<LensShadingMap>{
+        makeGradientShadingMap(3, 3),
+        MetadataSource::DynamicCaptureResult, MetadataValidity::Valid, 0.9F};
+
+    return raw;
+}
+
+void fillMonteCarloSignal(latent::imaging::RawFrame& raw) {
+    for (std::uint32_t y = 0; y < 32U; ++y) {
+        for (std::uint32_t x = 0; x < 32U; ++x) {
+            const float signalCode =
+                200.0F + 500.0F * (static_cast<float>(x + y) / 62.0F);
+            raw.storage.pixels[static_cast<std::size_t>(y) * 32U + x] =
+                static_cast<std::uint16_t>(signalCode);
+        }
+    }
+}
+
+void testMonteCarloNoisePropagation() {
+    using namespace latent::imaging;
+    using namespace latent::reference;
+
+    constexpr int kRealizations = 256;
+    constexpr std::uint32_t kSize = 32U;
+
+    const auto noiselessRaw = makeNoisyMonteCarloRaw();
+    fillMonteCarloSignal(const_cast<latent::imaging::RawFrame&>(noiselessRaw));
+
+    ReconstructionConfig config{};
+    config.defectCorrection = DefectCorrectionMode::Disabled;
+    config.applyLensShading = true;
+    config.whiteBalanceGains = {1.1F, 1.0F, 1.0F, 0.9F};
+    config.cameraToAcescg.values = {
+        1.0F, 0.02F, -0.02F,
+        -0.01F, 1.0F, 0.01F,
+        0.01F, -0.01F, 1.0F,
+    };
+    config.sceneScaleEV = 0.5F;
+
+    const auto noiseless = reconstructSingleRaw(noiselessRaw, config);
+    check(noiseless.propagatedNoise.valid,
+          "noise metadata must produce a valid propagated-noise record");
+
+    auto noisyRaw = makeNoisyMonteCarloRaw();
+    const auto pristinePixels = noiselessRaw.storage.pixels;
+    const auto& profile = *noisyRaw.noiseProfile.value;
+
+    std::mt19937 rng(20260821U);
+    std::vector<std::vector<float>> samples(
+        static_cast<std::size_t>(noiseless.image.rgb.size()));
+    std::normal_distribution<float> gaussian(0.0F, 1.0F);
+
+    for (int realization = 0; realization < kRealizations; ++realization) {
+        noisyRaw.storage.pixels = pristinePixels;
+        for (std::uint32_t y = 0; y < kSize; ++y) {
+            for (std::uint32_t x = 0; x < kSize; ++x) {
+                const auto index = static_cast<std::size_t>(y) * kSize + x;
+                const float code = static_cast<float>(pristinePixels[index]);
+                const auto channel = static_cast<std::size_t>(
+                    cfaChannelAt(noisyRaw.cfa, x, y));
+                const float sigmaCode =
+                    std::sqrt(profile.shot[channel] * code + profile.read[channel]);
+                float noisy = code + gaussian(rng) * sigmaCode;
+                noisy = std::clamp(noisy, 0.0F, 65535.0F);
+                noisyRaw.storage.pixels[index] =
+                    static_cast<std::uint16_t>(noisy + 0.5F);
+            }
+        }
+
+        const auto scene = reconstructSingleRaw(noisyRaw, config);
+        if (realization == 0) {
+            samples.assign(scene.image.rgb.size(), {});
+        }
+        for (std::size_t i = 0; i < scene.image.rgb.size(); ++i) {
+            samples[i].push_back(scene.image.rgb[i]);
+        }
+    }
+
+    std::vector<double> relativeErrors;
+    std::vector<double> biasErrors;
+
+    for (std::uint32_t y = 2U; y < kSize - 2U; ++y) {
+        for (std::uint32_t x = 2U; x < kSize - 2U; ++x) {
+            for (std::size_t c = 0; c < 3; ++c) {
+                const auto index =
+                    (static_cast<std::size_t>(y) * kSize + x) * 3U + c;
+
+                double mean = 0.0;
+                for (const auto value : samples[index]) {
+                    mean += static_cast<double>(value);
+                }
+                mean /= static_cast<double>(kRealizations);
+
+                double variance = 0.0;
+                for (const auto value : samples[index]) {
+                    const double d = static_cast<double>(value) - mean;
+                    variance += d * d;
+                }
+                variance /= static_cast<double>(kRealizations - 1);
+                const double empiricalSigma = std::sqrt(variance);
+
+                SigmaQuery query{};
+                query.x = x;
+                query.y = y;
+                query.rgbChannel = c;
+                query.sceneValueRgb = {noiseless.image.rgb[index - c],
+                                       noiseless.image.rgb[index - c + 1U],
+                                       noiseless.image.rgb[index - c + 2U]};
+                const double predictedSigma =
+                    propagatedSigma(noiseless.propagatedNoise, query);
+
+                if (!(predictedSigma > 1.0e-9)) {
+                    continue;
+                }
+                relativeErrors.push_back(
+                    std::fabs(empiricalSigma - predictedSigma) / predictedSigma);
+
+                biasErrors.push_back(
+                    std::fabs(mean - static_cast<double>(noiseless.image.rgb[index])) /
+                    predictedSigma);
+            }
+        }
+    }
+
+    check(relativeErrors.size() > 1000U,
+          "monte carlo must evaluate a meaningful pixel count");
+
+    std::sort(relativeErrors.begin(), relativeErrors.end());
+    std::sort(biasErrors.begin(), biasErrors.end());
+    const double medianRelative = relativeErrors[relativeErrors.size() / 2U];
+    const double p95Relative = relativeErrors[(relativeErrors.size() * 95U) / 100U];
+    const double medianBias = biasErrors[biasErrors.size() / 2U];
+
+    check(medianRelative <= 0.12,
+          "median sigma prediction error must stay within 12% (got " +
+              std::to_string(medianRelative) + ")");
+    check(p95Relative <= 0.35,
+          "p95 sigma prediction error must stay within 35% (got " +
+              std::to_string(p95Relative) + ")");
+    check(medianBias <= 0.35,
+          "reconstruction must remain unbiased within sampling noise (median |mean-true|/sigma = " +
+              std::to_string(medianBias) + ")");
+}
+
+void testPropagatedNoiseDefaultsAndGating() {
+    using namespace latent::reference;
+
+    const auto raw = makeRaw4x4();
+    ReconstructionConfig config{};
+    const auto withoutMetadata = reconstructSingleRaw(raw, config);
+    check(!withoutMetadata.propagatedNoise.valid,
+          "missing noise metadata must leave propagated noise invalid");
+
+    auto withNoise = makeRaw4x4();
+    latent::imaging::NoiseModel profile{};
+    for (std::size_t c = 0; c < 4; ++c) {
+        profile.read[c] = 4.0F;
+    }
+    withNoise.noiseProfile = latent::imaging::MetadataValue<latent::imaging::NoiseModel>{
+        profile, latent::imaging::MetadataSource::MeasuredCalibration,
+        latent::imaging::MetadataValidity::Valid, 1.0F};
+
+    const auto propagated = reconstructSingleRaw(withNoise, config);
+    check(propagated.propagatedNoise.valid,
+          "usable noise metadata must produce a valid propagated record");
+    check(propagated.propagatedNoise.extent.width == 4U,
+          "propagated extent must match the reconstruction extent");
+
+    ReconstructionConfig gated = config;
+    gated.propagateNoise = false;
+    check(!reconstructSingleRaw(withNoise, gated).propagatedNoise.valid,
+          "propagation must be disableable by configuration");
+}
+
 }  // namespace
 
 int main() {
@@ -717,6 +1255,15 @@ int main() {
         testMalvarHeCutlerGoldenVectors();
         testMalvarHeCutlerProperties();
         testEndToEndDngPipelineEquivalence();
+        testLensShadingMapValidation();
+        testLensShadingApplication();
+        testDefectCorrection();
+        testDefectDetection();
+        testNoiseModelValidationAndTransform();
+        testTapWeightsMirrorDemosaicOutput();
+        testPropagatedSigmaAnalyticCases();
+        testMonteCarloNoisePropagation();
+        testPropagatedNoiseDefaultsAndGating();
     } catch (const std::exception& error) {
         std::cerr << "UNCAUGHT EXCEPTION: " << error.what() << '\n';
         return EXIT_FAILURE;
