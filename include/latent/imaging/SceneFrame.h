@@ -1,5 +1,6 @@
 #pragma once
 
+#include "latent/imaging/Noise.h"
 #include "latent/imaging/Types.h"
 
 #include <cstdint>
@@ -29,6 +30,8 @@ struct SceneFrame {
     float sceneScaleEV = 0.0F;
     bool allowNegative = true;
     float whiteBalanceConfidence = 0.0F;
+
+    PropagatedNoise propagatedNoise{};
 };
 
 }  // namespace latent::imaging

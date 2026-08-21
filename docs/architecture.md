@@ -86,11 +86,45 @@ camera color model with FP32 reference semantics:
 The default reconstruction path is normalize -> MHC demosaic -> DNG color
 model -> SceneFrame (linear AP1, unbounded, negative-preserving).
 
+## Sensor reconstruction ops (implemented)
+
+`reference/SensorLinearOps` adds the pre-demosaic stages of the K1 chain:
+
+- **Defect correction**: map-driven replacement with the median of
+  same-CFA-channel neighbors (diagonal distance one, axial distance two);
+  deterministic, negative-preserving, non-defect samples untouched.
+- **Conservative defect detection**: a pixel is flagged only when its delta
+  to the same-channel neighbor median exceeds both a noise-aware threshold
+  (`sigmaMultiplier * sigma`, using the propagated noise model when
+  available) and an absolute floor. Detection is advisory; correction stays
+  map-driven.
+- **Lens shading**: Android-convention maps (4xNxM gains [R, Geven, Godd, B],
+  all >= 1.0) applied by bilinear grid interpolation after black-level
+  subtraction and before demosaic, per the DNG stage-opcode ordering.
+
+## Noise propagation (implemented)
+
+`imaging/Noise` + `reference/NoisePropagation` propagate NOISE_PROFILE
+metadata through the whole reference pipeline:
+
+- exact closed-form transform from raw-code domain to the normalized
+  sensor-linear domain selected by black/white levels;
+- per-tap variance composition through LSC gains, WB gains, and the exact
+  demosaic kernel weights of both methods;
+- `SceneFrame::propagatedNoise` stores a lazy record;
+  `reference::propagatedSigma` evaluates the scene-linear standard deviation
+  at any pixel/channel in O(taps) without materializing full-res maps.
+
+A Monte Carlo test (256 realizations, fixed seed, shot+read noise, WB gains,
+lens shading, color matrix, scene scale) verifies predictions against
+empirical reconstruction spread: median error ~3%, p95 ~9%, and
+reconstruction unbiasedness within sampling noise.
+
 ## Near-term milestones
 
 1. Android NDK capture contracts and metadata decoder tests using recorded metadata fixtures.
 2. ~~DNG-style color-calibration model and tested camera -> XYZ D50 -> D60/AP1 transform.~~ (done)
-3. Reference defect correction, LSC, and noise-profile propagation.
+3. ~~Reference defect correction, LSC, and noise-profile propagation.~~ (done)
 4. Vulkan loader/device-capability adapter plus canonical RAW ingress buffer.
 5. First differential Vulkan kernels: black/normalize/LSC/WB + demosaic/color transform.
 6. Scene analysis and independent SDR/HDR render branches.

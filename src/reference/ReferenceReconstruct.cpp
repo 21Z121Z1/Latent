@@ -1,12 +1,16 @@
 #include "latent/reference/ReferenceReconstruct.h"
 
+#include "latent/reference/NoisePropagation.h"
 #include "latent/reference/RawNormalize.h"
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <stdexcept>
+#include <vector>
 
 namespace latent::reference {
 namespace {
@@ -33,6 +37,37 @@ void validateConfig(const ReconstructionConfig& config) {
     }
 }
 
+std::vector<imaging::DefectPixel> collectDefects(
+    const imaging::RawFrame& raw,
+    const SensorLinearFrameF32& sensor,
+    const ReconstructionConfig& config,
+    const imaging::NoiseModel* normalizedNoise) {
+    std::vector<imaging::DefectPixel> defects;
+    if (config.defectCorrection == DefectCorrectionMode::FromMetadataMap ||
+        config.defectCorrection == DefectCorrectionMode::DetectAndCorrect) {
+        defects = raw.defects;
+    }
+
+    if (config.defectCorrection == DefectCorrectionMode::DetectAndCorrect &&
+        config.defectDetection.enabled) {
+        auto detected = detectDefectCandidates(sensor, config.defectDetection, normalizedNoise);
+        defects.insert(defects.end(), detected.begin(), detected.end());
+    }
+
+    if (defects.size() > 1U) {
+        std::sort(defects.begin(), defects.end(), [](const auto& a, const auto& b) {
+            return a.y != b.y ? a.y < b.y : a.x < b.x;
+        });
+        defects.erase(
+            std::unique(defects.begin(), defects.end(), [](const auto& a, const auto& b) {
+                return a.x == b.x && a.y == b.y;
+            }),
+            defects.end());
+    }
+
+    return defects;
+}
+
 }  // namespace
 
 imaging::SceneFrame reconstructSingleRaw(
@@ -42,6 +77,30 @@ imaging::SceneFrame reconstructSingleRaw(
     const auto sensor = normalizeRaw(raw);
     if (sensor.extent.width < 2U || sensor.extent.height < 2U) {
         throw std::invalid_argument("Bayer demosaic requires at least a 2x2 RAW extent");
+    }
+
+    std::optional<imaging::NoiseModel> normalizedNoise;
+    if (raw.noiseProfile.usable()) {
+        const auto noiseCheck = imaging::validateNoiseModel(*raw.noiseProfile.value);
+        if (!noiseCheck.valid) {
+            throw std::invalid_argument(noiseCheck.message);
+        }
+        normalizedNoise = normalizeNoiseModel(*raw.noiseProfile.value, sensor.levels);
+    }
+
+    auto working = sensor;
+    if (config.defectCorrection != DefectCorrectionMode::Disabled) {
+        const auto defects =
+            collectDefects(raw, working, config, normalizedNoise ? &*normalizedNoise : nullptr);
+        if (!defects.empty()) {
+            working = correctDefects(working, defects);
+        }
+    }
+
+    bool lensShadingApplied = false;
+    if (config.applyLensShading && raw.lensShading.usable()) {
+        working = applyLensShading(working, *raw.lensShading.value);
+        lensShadingApplied = true;
     }
 
     imaging::Matrix3f cameraToScene = imaging::Matrix3f::identity();
@@ -58,7 +117,7 @@ imaging::SceneFrame reconstructSingleRaw(
     }
 
     const auto rgb = demosaicSensorLinear(
-        sensor, config.whiteBalanceGains, config.demosaicMethod);
+        working, config.whiteBalanceGains, config.demosaicMethod);
 
     imaging::SceneFrame scene{};
     scene.sourceRawId = raw.id;
@@ -77,6 +136,18 @@ imaging::SceneFrame reconstructSingleRaw(
         scene.image.rgb[i] = sceneRgb[0] * sceneScale;
         scene.image.rgb[i + 1U] = sceneRgb[1] * sceneScale;
         scene.image.rgb[i + 2U] = sceneRgb[2] * sceneScale;
+    }
+
+    if (config.propagateNoise && normalizedNoise.has_value()) {
+        scene.propagatedNoise = buildPropagatedNoise(
+            sensor,
+            *normalizedNoise,
+            config.whiteBalanceGains,
+            lensShadingApplied,
+            lensShadingApplied ? &*raw.lensShading.value : nullptr,
+            cameraToScene,
+            sceneScale,
+            config.demosaicMethod);
     }
 
     return scene;

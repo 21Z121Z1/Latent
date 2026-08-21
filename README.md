@@ -33,6 +33,18 @@ The second slice adds a tested FP32 color pipeline:
 - Malvar-He-Cutler (2004) gradient-corrected demosaic with golden-vector and
   property tests, alongside the retained box-average baseline.
 
+## Sensor reconstruction ops
+
+The third slice adds the pre-demosaic stages and uncertainty tracking:
+
+- map-driven defect correction plus conservative noise-aware defect
+  detection;
+- Android-convention lens-shading maps applied between black-level
+  subtraction and demosaic;
+- NOISE_PROFILE propagation through every stage, exposed as a lazy
+  per-pixel sigma query on `SceneFrame` and verified by Monte Carlo
+  simulation.
+
 ## License
 
 Apache-2.0. See [`LICENSE`](LICENSE).

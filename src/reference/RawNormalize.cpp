@@ -1,6 +1,7 @@
 #include "latent/reference/RawNormalize.h"
 
 #include <algorithm>
+#include <cmath>
 #include <initializer_list>
 #include <stdexcept>
 
@@ -45,6 +46,37 @@ RawValidation validateRawFrame(const RawFrame& frame) {
     }
     if (frame.sensitivityIso <= 0.0F) {
         return {false, "sensitivity ISO must be positive"};
+    }
+    return {};
+}
+
+RawValidation validateLensShadingMap(const LensShadingMap& map) {
+    if (map.gridColumns == 0 || map.gridRows == 0) {
+        return {false, "lens shading map grid must be non-empty"};
+    }
+    const auto expected = static_cast<std::size_t>(map.gainCount());
+    if (map.gains.size() != expected) {
+        return {false, "lens shading map gain count must equal gridColumns * gridRows * 4"};
+    }
+    for (const auto gain : map.gains) {
+        if (!std::isfinite(gain)) {
+            return {false, "lens shading map gains must be finite"};
+        }
+        if (gain < 1.0F) {
+            return {false, "lens shading map gains must be >= 1.0"};
+        }
+    }
+    return {};
+}
+
+RawValidation validateNoiseModel(const NoiseModel& model) {
+    for (std::size_t c = 0; c < 4; ++c) {
+        if (!std::isfinite(model.shot[c]) || !std::isfinite(model.read[c])) {
+            return {false, "noise model coefficients must be finite"};
+        }
+        if (model.shot[c] < 0.0F || model.read[c] < 0.0F) {
+            return {false, "noise model coefficients must be non-negative"};
+        }
     }
     return {};
 }

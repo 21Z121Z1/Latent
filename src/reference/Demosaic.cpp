@@ -212,6 +212,103 @@ RgbImageF32 demosaicBaselineBoxAverage(
 
 }  // namespace
 
+std::vector<DemosaicTap> demosaicTapWeights(
+    const imaging::Extent& extent,
+    imaging::CfaPattern cfa,
+    std::uint32_t x,
+    std::uint32_t y,
+    std::size_t rgbChannel,
+    const std::array<float, 4>& whiteBalanceGains,
+    DemosaicMethod method) {
+    if (extent.width == 0 || extent.height == 0) {
+        throw std::invalid_argument("tap weights require a non-empty extent");
+    }
+    if (x >= extent.width || y >= extent.height) {
+        throw std::invalid_argument("tap weight position must lie inside the extent");
+    }
+    if (rgbChannel > 2U) {
+        throw std::invalid_argument("rgb channel must be 0, 1, or 2");
+    }
+
+    const auto centerChannel = imaging::cfaChannelAt(cfa, x, y);
+    const auto centerRgb = rgbChannelIndex(centerChannel);
+
+    std::vector<DemosaicTap> taps;
+
+    if (method == DemosaicMethod::BaselineBoxAverage) {
+        if (centerRgb == rgbChannel) {
+            taps.push_back({x, y, centerChannel, whiteBalanceGains[static_cast<std::size_t>(centerChannel)]});
+            return taps;
+        }
+
+        const auto x0 = x == 0 ? 0 : x - 1;
+        const auto y0 = y == 0 ? 0 : y - 1;
+        const auto x1 = x + 1 < extent.width ? x + 1 : x;
+        const auto y1 = y + 1 < extent.height ? y + 1 : y;
+
+        std::vector<DemosaicTap> candidates;
+        std::uint32_t count = 0U;
+        for (std::uint32_t yy = y0; yy <= y1; ++yy) {
+            for (std::uint32_t xx = x0; xx <= x1; ++xx) {
+                const auto channel = imaging::cfaChannelAt(cfa, xx, yy);
+                if (rgbChannelIndex(channel) != rgbChannel) {
+                    continue;
+                }
+                ++count;
+                candidates.push_back({xx, yy, channel, 0.0F});
+            }
+        }
+        if (count == 0U) {
+            throw std::runtime_error("demosaic neighborhood contains no sample for a required channel");
+        }
+        const float share = 1.0F / static_cast<float>(count);
+        for (auto& tap : candidates) {
+            tap.weight = share * whiteBalanceGains[static_cast<std::size_t>(tap.channel)];
+            taps.push_back(tap);
+        }
+        return taps;
+    }
+
+    if (centerRgb == rgbChannel) {
+        taps.push_back({x, y, centerChannel, whiteBalanceGains[static_cast<std::size_t>(centerChannel)]});
+        return taps;
+    }
+
+    const std::array<float, 25>* kernel = nullptr;
+    if (isGreen(centerChannel)) {
+        const auto neighborX = x + 1 < extent.width ? x + 1 : (x > 0 ? x - 1 : x);
+        const auto horizontalChannel = imaging::cfaChannelAt(cfa, neighborX, y);
+        const bool rowAligned = rgbChannelIndex(horizontalChannel) == rgbChannel;
+        kernel = rowAligned ? &kTargetAtGreenRowAligned : &kTargetAtGreenColumnAligned;
+    } else if (rgbChannel == 1U) {
+        kernel = &kGreenAtRedBlue;
+    } else {
+        kernel = &kTargetAtOppositeColor;
+    }
+
+    for (std::size_t ky = 0; ky < kWidth; ++ky) {
+        for (std::size_t kx = 0; kx < kWidth; ++kx) {
+            const float coefficient = (*kernel)[kernelIndex(ky, kx)];
+            if (coefficient == 0.0F) {
+                continue;
+            }
+            const auto sampleX = static_cast<std::uint32_t>(
+                std::clamp<std::int64_t>(
+                    static_cast<std::int64_t>(x) + static_cast<std::int64_t>(kx) - 2,
+                    0, static_cast<std::int64_t>(extent.width) - 1));
+            const auto sampleY = static_cast<std::uint32_t>(
+                std::clamp<std::int64_t>(
+                    static_cast<std::int64_t>(y) + static_cast<std::int64_t>(ky) - 2,
+                    0, static_cast<std::int64_t>(extent.height) - 1));
+            const auto channel = imaging::cfaChannelAt(cfa, sampleX, sampleY);
+            taps.push_back({sampleX, sampleY, channel,
+                            coefficient * whiteBalanceGains[static_cast<std::size_t>(channel)]});
+        }
+    }
+
+    return taps;
+}
+
 RgbImageF32 demosaicSensorLinear(
     const SensorLinearFrameF32& frame,
     const std::array<float, 4>& whiteBalanceGains,
