@@ -1,7 +1,9 @@
 #pragma once
 
 #include <array>
+#include <cmath>
 #include <cstdint>
+#include <optional>
 #include <string>
 
 namespace latent::imaging {
@@ -137,6 +139,10 @@ struct Matrix3f {
         0.0F, 0.0F, 1.0F,
     };
 
+    [[nodiscard]] static constexpr Matrix3f identity() noexcept {
+        return Matrix3f{};
+    }
+
     [[nodiscard]] constexpr std::array<float, 3> apply(const std::array<float, 3>& v) const noexcept {
         return {
             values[0] * v[0] + values[1] * v[1] + values[2] * v[2],
@@ -144,6 +150,58 @@ struct Matrix3f {
             values[6] * v[0] + values[7] * v[1] + values[8] * v[2],
         };
     }
+
+    [[nodiscard]] constexpr Matrix3f multiplied(const Matrix3f& rhs) const noexcept {
+        return Matrix3f{{
+            values[0] * rhs.values[0] + values[1] * rhs.values[3] + values[2] * rhs.values[6],
+            values[0] * rhs.values[1] + values[1] * rhs.values[4] + values[2] * rhs.values[7],
+            values[0] * rhs.values[2] + values[1] * rhs.values[5] + values[2] * rhs.values[8],
+            values[3] * rhs.values[0] + values[4] * rhs.values[3] + values[5] * rhs.values[6],
+            values[3] * rhs.values[1] + values[4] * rhs.values[4] + values[5] * rhs.values[7],
+            values[3] * rhs.values[2] + values[4] * rhs.values[5] + values[5] * rhs.values[8],
+            values[6] * rhs.values[0] + values[7] * rhs.values[3] + values[8] * rhs.values[6],
+            values[6] * rhs.values[1] + values[7] * rhs.values[4] + values[8] * rhs.values[7],
+            values[6] * rhs.values[2] + values[7] * rhs.values[5] + values[8] * rhs.values[8],
+        }};
+    }
+
+    [[nodiscard]] constexpr Matrix3f transposed() const noexcept {
+        return Matrix3f{{
+            values[0], values[3], values[6],
+            values[1], values[4], values[7],
+            values[2], values[5], values[8],
+        }};
+    }
 };
+
+[[nodiscard]] inline std::optional<Matrix3f> inverted(const Matrix3f& m) noexcept {
+    const float a = m.values[0];
+    const float b = m.values[1];
+    const float c = m.values[2];
+    const float d = m.values[3];
+    const float e = m.values[4];
+    const float f = m.values[5];
+    const float g = m.values[6];
+    const float h = m.values[7];
+    const float i = m.values[8];
+
+    const float det = a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g);
+    if (!std::isfinite(det) || std::fabs(det) < 1.0e-20F) {
+        return std::nullopt;
+    }
+
+    const float invDet = 1.0F / det;
+    return Matrix3f{{
+        (e * i - f * h) * invDet,
+        (c * h - b * i) * invDet,
+        (b * f - c * e) * invDet,
+        (f * g - d * i) * invDet,
+        (a * i - c * g) * invDet,
+        (c * d - a * f) * invDet,
+        (d * h - e * g) * invDet,
+        (b * g - a * h) * invDet,
+        (a * e - b * d) * invDet,
+    }};
+}
 
 }  // namespace latent::imaging

@@ -24,72 +24,13 @@ void validateConfig(const ReconstructionConfig& config) {
             throw std::invalid_argument("white-balance gains must be finite and positive");
         }
     }
-    for (const auto coefficient : config.cameraToAcescg.values) {
-        if (!std::isfinite(coefficient)) {
-            throw std::invalid_argument("cameraToAcescg matrix must contain only finite values");
+    if (config.colorPath == ColorPath::ExplicitMatrix) {
+        for (const auto coefficient : config.cameraToAcescg.values) {
+            if (!std::isfinite(coefficient)) {
+                throw std::invalid_argument("cameraToAcescg matrix must contain only finite values");
+            }
         }
     }
-}
-
-std::size_t cfaIndex(imaging::CfaChannel channel) {
-    return static_cast<std::size_t>(channel);
-}
-
-std::size_t rgbIndex(imaging::CfaChannel channel) {
-    switch (channel) {
-        case imaging::CfaChannel::R: return 0;
-        case imaging::CfaChannel::G0:
-        case imaging::CfaChannel::G1: return 1;
-        case imaging::CfaChannel::B: return 2;
-    }
-    return 0;
-}
-
-float weightedSample(
-    const SensorLinearFrameF32& frame,
-    const ReconstructionConfig& config,
-    std::uint32_t x,
-    std::uint32_t y) {
-    const auto index = static_cast<std::size_t>(y) * frame.extent.width + x;
-    const auto channel = imaging::cfaChannelAt(frame.cfa, x, y);
-    return frame.samples[index] * config.whiteBalanceGains[cfaIndex(channel)];
-}
-
-std::array<float, 3> demosaicPixel(
-    const SensorLinearFrameF32& frame,
-    const ReconstructionConfig& config,
-    std::uint32_t x,
-    std::uint32_t y) {
-    std::array<float, 3> sum{0.0F, 0.0F, 0.0F};
-    std::array<std::uint32_t, 3> count{0U, 0U, 0U};
-
-    const auto x0 = x == 0 ? 0 : x - 1;
-    const auto y0 = y == 0 ? 0 : y - 1;
-    const auto x1 = x + 1 < frame.extent.width ? x + 1 : x;
-    const auto y1 = y + 1 < frame.extent.height ? y + 1 : y;
-
-    for (std::uint32_t yy = y0; yy <= y1; ++yy) {
-        for (std::uint32_t xx = x0; xx <= x1; ++xx) {
-            const auto channel = imaging::cfaChannelAt(frame.cfa, xx, yy);
-            const auto target = rgbIndex(channel);
-            sum[target] += weightedSample(frame, config, xx, yy);
-            ++count[target];
-        }
-    }
-
-    const auto centerChannel = imaging::cfaChannelAt(frame.cfa, x, y);
-    const auto centerRgb = rgbIndex(centerChannel);
-    sum[centerRgb] = weightedSample(frame, config, x, y);
-    count[centerRgb] = 1U;
-
-    std::array<float, 3> rgb{};
-    for (std::size_t c = 0; c < rgb.size(); ++c) {
-        if (count[c] == 0U) {
-            throw std::runtime_error("demosaic neighborhood contains no sample for a required channel");
-        }
-        rgb[c] = sum[c] / static_cast<float>(count[c]);
-    }
-    return rgb;
 }
 
 }  // namespace
@@ -100,13 +41,29 @@ imaging::SceneFrame reconstructSingleRaw(
     validateConfig(config);
     const auto sensor = normalizeRaw(raw);
     if (sensor.extent.width < 2U || sensor.extent.height < 2U) {
-        throw std::invalid_argument("baseline Bayer demosaic requires at least a 2x2 RAW extent");
+        throw std::invalid_argument("Bayer demosaic requires at least a 2x2 RAW extent");
     }
+
+    imaging::Matrix3f cameraToScene = imaging::Matrix3f::identity();
+    if (config.colorPath == ColorPath::DngProfile) {
+        const auto profileCheck = validateDngProfile(config.dngProfile);
+        if (!profileCheck.valid) {
+            throw std::invalid_argument(profileCheck.message);
+        }
+        const auto cameraToXyzD50 =
+            cameraToXyzD50Matrix(config.whiteBalanceXy, config.dngProfile);
+        cameraToScene = xyzD50ToAcescgMatrix().multiplied(cameraToXyzD50.matrix);
+    } else {
+        cameraToScene = config.cameraToAcescg;
+    }
+
+    const auto rgb = demosaicSensorLinear(
+        sensor, config.whiteBalanceGains, config.demosaicMethod);
 
     imaging::SceneFrame scene{};
     scene.sourceRawId = raw.id;
-    scene.image.extent = sensor.extent;
-    scene.image.rgb.resize(static_cast<std::size_t>(sensor.extent.pixelCount()) * 3U);
+    scene.image.extent = rgb.extent;
+    scene.image.rgb.resize(static_cast<std::size_t>(rgb.extent.pixelCount()) * 3U);
     scene.sceneScaleEV = config.sceneScaleEV;
     const float sceneScale = std::exp2(config.sceneScaleEV);
     if (!std::isfinite(sceneScale)) {
@@ -114,15 +71,12 @@ imaging::SceneFrame reconstructSingleRaw(
     }
     scene.whiteBalanceConfidence = config.whiteBalanceConfidence;
 
-    for (std::uint32_t y = 0; y < sensor.extent.height; ++y) {
-        for (std::uint32_t x = 0; x < sensor.extent.width; ++x) {
-            const auto cameraRgb = demosaicPixel(sensor, config, x, y);
-            const auto sceneRgb = config.cameraToAcescg.apply(cameraRgb);
-            const auto base = (static_cast<std::size_t>(y) * sensor.extent.width + x) * 3U;
-            scene.image.rgb[base] = sceneRgb[0] * sceneScale;
-            scene.image.rgb[base + 1U] = sceneRgb[1] * sceneScale;
-            scene.image.rgb[base + 2U] = sceneRgb[2] * sceneScale;
-        }
+    for (std::size_t i = 0; i < scene.image.rgb.size(); i += 3U) {
+        const std::array<float, 3> cameraRgb{rgb.rgb[i], rgb.rgb[i + 1U], rgb.rgb[i + 2U]};
+        const auto sceneRgb = cameraToScene.apply(cameraRgb);
+        scene.image.rgb[i] = sceneRgb[0] * sceneScale;
+        scene.image.rgb[i + 1U] = sceneRgb[1] * sceneScale;
+        scene.image.rgb[i + 2U] = sceneRgb[2] * sceneScale;
     }
 
     return scene;
