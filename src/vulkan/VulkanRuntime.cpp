@@ -162,12 +162,13 @@ RuntimeAvailability VulkanRuntime::tryInitialize() {
         return availability;
     }
 
-    VkPhysicalDeviceVulkan11Properties properties11;
-    properties11.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_PROPERTIES;
-    properties11.pNext = nullptr;
+    VkPhysicalDeviceSubgroupProperties subgroupProperties;
+    subgroupProperties.sType =
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_PROPERTIES;
+    subgroupProperties.pNext = nullptr;
     VkPhysicalDeviceProperties2 properties;
     properties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
-    properties.pNext = &properties11;
+    properties.pNext = &subgroupProperties;
     vkGetPhysicalDeviceProperties2(runtime.physicalDevice, &properties);
 
     VkPhysicalDeviceVulkan11Features features11;
@@ -217,8 +218,8 @@ RuntimeAvailability VulkanRuntime::tryInitialize() {
     caps.timelineSemaphore = features12.timelineSemaphore != 0U;
     caps.synchronization2 = features13.synchronization2 != 0U;
     caps.subgroupOperations =
-        (properties11.subgroupSupportedStages & VK_SHADER_STAGE_COMPUTE_BIT) != 0U &&
-        (properties11.subgroupSupportedOperations &
+        (subgroupProperties.supportedStages & VK_SHADER_STAGE_COMPUTE_BIT) != 0U &&
+        (subgroupProperties.supportedOperations &
          VK_SUBGROUP_FEATURE_BASIC_BIT) != 0U;
     caps.descriptorIndexing = features12.descriptorIndexing != 0U;
     caps.shaderFloatControls =

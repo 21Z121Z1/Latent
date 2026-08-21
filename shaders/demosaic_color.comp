@@ -28,7 +28,7 @@ layout(push_constant) uniform Params
     uint pad0;
     uint pad1;
     uint pad2;
-    float matrixValues[9];    // camera->scene, column-major
+    float matrixValues[9];    // camera->scene, row-major
     float sceneScale;
     uint pad3;
     uint pad4;
@@ -187,8 +187,7 @@ void main()
         }
     }
 
-    // Column-major storage lets each output channel read a contiguous
-    // triple; the explicit expansion mirrors Matrix3f::apply exactly.
+    // Row-major storage mirrors Matrix3f::values and Matrix3f::apply exactly.
     float sceneValue[3];
     for (uint target = 0u; target < 3u; ++target) {
         sceneValue[target] =

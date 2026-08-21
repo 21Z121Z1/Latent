@@ -1651,20 +1651,6 @@ void testVulkanDemosaicColorDifferential() {
                     worstAbsolute = std::max(
                         worstAbsolute,
                         static_cast<double>(absoluteError));
-                    if (std::getenv("LATENT_DEMOSAIC_DEBUG") != nullptr &&
-                        outOfTolerance <= 5U) {
-                        const auto x = p % params.extent.width;
-                        const auto y = p / params.extent.width;
-                        std::cout << "demosaic mismatch case="
-                                  << static_cast<int>(testCase.cfa)
-                                  << " method="
-                                  << static_cast<int>(params.demosaicMethod)
-                                  << " x=" << x << " y=" << y << " c=" << c
-                                  << " expected=" << sceneExpected
-                                  << " actual=" << actualValue
-                                  << " bits=0x" << std::hex << actualBits
-                                  << std::dec << "\n";
-                    }
                 }
 
                 if (std::fabs(sceneExpected) >

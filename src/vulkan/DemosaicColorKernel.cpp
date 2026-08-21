@@ -33,13 +33,7 @@ static_assert(offsetof(PushParams, matrixValues) == 32U);
 static_assert(offsetof(PushParams, sceneScale) == 68U);
 
 std::array<float, 9> toColumnMajor(const std::array<float, 9>& rowMajor) {
-    std::array<float, 9> column{};
-    for (std::size_t row = 0; row < 3U; ++row) {
-        for (std::size_t col = 0; col < 3U; ++col) {
-            column[col * 3U + row] = rowMajor[row * 3U + col];
-        }
-    }
-    return column;
+    return rowMajor;
 }
 
 }  // namespace
