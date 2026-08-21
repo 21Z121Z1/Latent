@@ -1546,6 +1546,15 @@ void testVulkanDemosaicColorDifferential() {
     };
     const float sceneScale = 1.5F;
 
+#ifdef LATENT_ENABLE_VULKAN_RUNTIME
+    if (std::getenv("LATENT_DEMOSAIC_DEBUG") != nullptr) {
+        const auto& caps = latent::vulkan::VulkanRuntime::deviceCaps();
+        std::cout << "demosaic debug device api=" << caps.apiVersion.major
+                  << '.' << caps.apiVersion.minor << '.'
+                  << caps.apiVersion.patch << '\n';
+    }
+#endif
+
     for (const auto& testCase : cases) {
         PreprocessParams preParams{};
         preParams.extent = testCase.extent;
@@ -1642,6 +1651,19 @@ void testVulkanDemosaicColorDifferential() {
                     worstAbsolute = std::max(
                         worstAbsolute,
                         static_cast<double>(absoluteError));
+                    if (std::getenv("LATENT_DEMOSAIC_DEBUG") != nullptr &&
+                        outOfTolerance <= 5U) {
+                        const auto x = p % params.extent.width;
+                        const auto y = p / params.extent.width;
+                        std::cout << "demosaic mismatch case="
+                                  << static_cast<int>(testCase.cfa)
+                                  << " method=" << params.demosaicMethod
+                                  << " x=" << x << " y=" << y << " c=" << c
+                                  << " expected=" << sceneExpected
+                                  << " actual=" << actualValue
+                                  << " bits=0x" << std::hex << actualBits
+                                  << std::dec << "\n";
+                    }
                 }
 
                 if (std::fabs(sceneExpected) >

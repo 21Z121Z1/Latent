@@ -16,7 +16,7 @@ jobs:
       - name: Install software Vulkan driver (Mesa lavapipe)
         run: |
           sudo apt-get update -qq
-          if ! sudo apt-get install -y -qq libvulkan1 mesa-vulkan-drivers; then
+          if ! sudo apt-get install -y -qq libvulkan1 mesa-vulkan-drivers vulkan-validationlayers; then
             echo "lavapipe installation failed; runtime smoke tests will skip gracefully"
           fi
           ls -la /usr/share/vulkan/icd.d/ || true
@@ -25,6 +25,9 @@ jobs:
       - name: Build
         run: cmake --build build --parallel
       - name: Test
+        env:
+          VK_INSTANCE_LAYERS: VK_LAYER_KHRONOS_validation
+          LATENT_DEMOSAIC_DEBUG: "1"
         run: ctest --test-dir build --output-on-failure --verbose
 
       - name: Configure (no Vulkan runtime)
