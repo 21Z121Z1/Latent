@@ -1657,7 +1657,8 @@ void testVulkanDemosaicColorDifferential() {
                         const auto y = p / params.extent.width;
                         std::cout << "demosaic mismatch case="
                                   << static_cast<int>(testCase.cfa)
-                                  << " method=" << params.demosaicMethod
+                                  << " method="
+                                  << static_cast<int>(params.demosaicMethod)
                                   << " x=" << x << " y=" << y << " c=" << c
                                   << " expected=" << sceneExpected
                                   << " actual=" << actualValue
