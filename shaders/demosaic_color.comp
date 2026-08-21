@@ -35,33 +35,33 @@ layout(push_constant) uniform Params
     uint pad5;
 } params;
 
-const float kTargetAtGreenRow[25] = float[](
-    0.0F, 0.0F, 0.0625F, 0.0F, 0.0F,
-    0.0F, -0.125F, 0.0F, -0.125F, 0.0F,
-    -0.125F, 0.5F, 0.625F, 0.5F, -0.125F,
-    0.0F, -0.125F, 0.0F, -0.125F, 0.0F,
-    0.0F, 0.0F, 0.0625F, 0.0F, 0.0F);
+const float kTargetAtGreenRow[5][5] = float[][](
+    float[](0.0F, 0.0F, 0.0625F, 0.0F, 0.0F),
+    float[](0.0F, -0.125F, 0.0F, -0.125F, 0.0F),
+    float[](-0.125F, 0.5F, 0.625F, 0.5F, -0.125F),
+    float[](0.0F, -0.125F, 0.0F, -0.125F, 0.0F),
+    float[](0.0F, 0.0F, 0.0625F, 0.0F, 0.0F));
 
-const float kTargetAtGreenColumn[25] = float[](
-    0.0F, 0.0F, -0.125F, 0.0F, 0.0F,
-    0.0F, -0.125F, 0.5F, -0.125F, 0.0F,
-    0.0625F, 0.0F, 0.625F, 0.0F, 0.0625F,
-    0.0F, -0.125F, 0.5F, -0.125F, 0.0F,
-    0.0F, 0.0F, -0.125F, 0.0F, 0.0F);
+const float kTargetAtGreenColumn[5][5] = float[][](
+    float[](0.0F, 0.0F, -0.125F, 0.0F, 0.0F),
+    float[](0.0F, -0.125F, 0.5F, -0.125F, 0.0F),
+    float[](0.0625F, 0.0F, 0.625F, 0.0F, 0.0625F),
+    float[](0.0F, -0.125F, 0.5F, -0.125F, 0.0F),
+    float[](0.0F, 0.0F, -0.125F, 0.0F, 0.0F));
 
-const float kGreenAtRedBlue[25] = float[](
-    0.0F, 0.0F, -0.125F, 0.0F, 0.0F,
-    0.0F, 0.0F, 0.25F, 0.0F, 0.0F,
-    -0.125F, 0.25F, 0.5F, 0.25F, -0.125F,
-    0.0F, 0.0F, 0.25F, 0.0F, 0.0F,
-    0.0F, 0.0F, -0.125F, 0.0F, 0.0F);
+const float kGreenAtRedBlue[5][5] = float[][](
+    float[](0.0F, 0.0F, -0.125F, 0.0F, 0.0F),
+    float[](0.0F, 0.0F, 0.25F, 0.0F, 0.0F),
+    float[](-0.125F, 0.25F, 0.5F, 0.25F, -0.125F),
+    float[](0.0F, 0.0F, 0.25F, 0.0F, 0.0F),
+    float[](0.0F, 0.0F, -0.125F, 0.0F, 0.0F));
 
-const float kTargetAtOppositeColor[25] = float[](
-    0.0F, 0.0F, -0.1875F, 0.0F, 0.0F,
-    0.0F, 0.25F, 0.0F, 0.25F, 0.0F,
-    -0.1875F, 0.0F, 0.75F, 0.0F, -0.1875F,
-    0.0F, 0.25F, 0.0F, 0.25F, 0.0F,
-    0.0F, 0.0F, -0.1875F, 0.0F, 0.0F);
+const float kTargetAtOppositeColor[5][5] = float[][](
+    float[](0.0F, 0.0F, -0.1875F, 0.0F, 0.0F),
+    float[](0.0F, 0.25F, 0.0F, 0.25F, 0.0F),
+    float[](-0.1875F, 0.0F, 0.75F, 0.0F, -0.1875F),
+    float[](0.0F, 0.25F, 0.0F, 0.25F, 0.0F),
+    float[](0.0F, 0.0F, -0.1875F, 0.0F, 0.0F));
 
 uint channelAt(uint x, uint y)
 {
@@ -124,20 +124,22 @@ float baselinePixel(uint x, uint y, uint targetChannel)
 float mhcPixel(uint x, uint y, uint targetChannel)
 {
     float sum = 0.0F;
+    const bool centerGreen =
+        channelAt(x, y) == 1u || channelAt(x, y) == 2u;
+    const uint neighborX =
+        x + 1u < params.width ? x + 1u : (x > 0u ? x - 1u : x);
+    const bool rowAligned =
+        channelAt(neighborX, y) == targetChannel;
     for (uint dy = 0u; dy < 5u; ++dy) {
         for (uint dx = 0u; dx < 5u; ++dx) {
-            const uint index = dy * 5u + dx;
             float weight = 0.0F;
-            if ((channelAt(x, y) == 1u || channelAt(x, y) == 2u)) {
-                const uint nx =
-                    x + 1u < params.width ? x + 1u : (x > 0u ? x - 1u : x);
-                weight = channelAt(nx, y) == targetChannel
-                             ? kTargetAtGreenRow[index]
-                             : kTargetAtGreenColumn[index];
+            if (centerGreen) {
+                weight = rowAligned ? kTargetAtGreenRow[dy][dx]
+                                    : kTargetAtGreenColumn[dy][dx];
             } else if (targetChannel == 1u) {
-                weight = kGreenAtRedBlue[index];
+                weight = kGreenAtRedBlue[dy][dx];
             } else {
-                weight = kTargetAtOppositeColor[index];
+                weight = kTargetAtOppositeColor[dy][dx];
             }
             if (weight != 0.0F) {
                 sum += weight *
