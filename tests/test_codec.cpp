@@ -140,6 +140,12 @@ void testStagingValidation() {
         [&]() { (void)stageUltraHdrRenditions(outOfRange, hdr); },
         "staging must reject encoded samples outside [0, 1]");
 
+    auto wrongNominalWhite = hdr;
+    wrongNominalWhite.nominalWhiteNits = 100.0F;
+    checkInvalidArgument(
+        [&]() { (void)stageUltraHdrRenditions(sdr, wrongNominalWhite); },
+        "staging must reject HDR nominal white incompatible with libultrahdr semantics");
+
     auto lowPeak = hdr;
     lowPeak.peakTargetNits = 200.0F;
     checkInvalidArgument(
