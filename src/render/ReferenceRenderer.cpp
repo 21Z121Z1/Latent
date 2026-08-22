@@ -252,7 +252,11 @@ imaging::RenderedFrame renderReference(
 
         const auto xyzD60 = ap1ToXyzD60.apply(exposedAp1);
         const float sceneLuminance = xyzD60[1];
-        if (!(sceneLuminance > 0.0F) || !std::isfinite(sceneLuminance)) {
+        if (!std::isfinite(sceneLuminance)) {
+            throw std::invalid_argument(
+                "reference rendering produced a non-finite scene luminance");
+        }
+        if (!(sceneLuminance > 0.0F)) {
             const auto encodedBlack = encodeOutput({0.0F, 0.0F, 0.0F}, config);
             rendered.image.rgb.insert(
                 rendered.image.rgb.end(), encodedBlack.begin(), encodedBlack.end());
@@ -266,7 +270,11 @@ imaging::RenderedFrame renderReference(
 
         const auto xyzD65 = d60ToD65.apply(xyzD60);
         const float adaptedLuminance = xyzD65[1];
-        if (!(adaptedLuminance > 0.0F) || !std::isfinite(adaptedLuminance)) {
+        if (!std::isfinite(adaptedLuminance)) {
+            throw std::invalid_argument(
+                "reference rendering produced a non-finite adapted luminance");
+        }
+        if (!(adaptedLuminance > 0.0F)) {
             const auto encodedNeutral = encodeOutput(
                 {targetLuminance, targetLuminance, targetLuminance}, config);
             rendered.image.rgb.insert(
