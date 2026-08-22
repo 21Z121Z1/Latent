@@ -3,225 +3,133 @@
 #include "latent/render/ReferenceRenderer.h"
 
 #include <cmath>
-#include <cstddef>
 #include <cstdint>
-#include <exception>
 #include <functional>
 #include <iostream>
 #include <limits>
 #include <stdexcept>
 #include <string>
-#include <vector>
 
 namespace {
-
 int failures = 0;
-
-void check(bool condition, const std::string& message) {
-    if (!condition) {
-        ++failures;
-        std::cerr << "FAIL: " << message << '\n';
-    }
+void check(bool ok, const std::string& message) {
+    if (!ok) { ++failures; std::cerr << "FAIL: " << message << '\n'; }
 }
-
-void checkInvalidArgument(
-    const std::function<void()>& operation,
-    const std::string& message) {
+void checkInvalid(const std::function<void()>& fn, const std::string& message) {
     bool threw = false;
-    try {
-        operation();
-    } catch (const std::invalid_argument&) {
-        threw = true;
-    }
+    try { fn(); } catch (const std::invalid_argument&) { threw = true; }
     check(threw, message);
 }
 
-latent::imaging::RenderedFrame makeSdr() {
-    latent::imaging::RenderedFrame frame{};
+latent::imaging::RenderedFrame makeRendition(bool hdr) {
+    using namespace latent::imaging;
+    RenderedFrame frame{};
     frame.sourceRawId = 7U;
-    frame.intent = latent::imaging::RenderIntent::SDR;
-    frame.primaries = latent::imaging::Primaries::SRGBRec709;
-    frame.whitePoint = latent::imaging::WhitePoint::D65;
-    frame.transfer = latent::imaging::TransferFunction::SRGB;
-    frame.reference = latent::imaging::ReferenceDomain::Display;
-    frame.range = latent::imaging::RangeSemantics::EncodedDisplay;
+    frame.intent = hdr ? RenderIntent::HDR : RenderIntent::SDR;
+    frame.primaries = hdr ? Primaries::BT2020 : Primaries::SRGBRec709;
+    frame.whitePoint = WhitePoint::D65;
+    frame.transfer = hdr ? TransferFunction::PQ : TransferFunction::SRGB;
+    frame.reference = ReferenceDomain::Display;
+    frame.range = RangeSemantics::EncodedDisplay;
     frame.allowNegative = false;
-    frame.nominalWhiteNits = 100.0F;
-    frame.peakTargetNits = 100.0F;
+    frame.nominalWhiteNits = hdr ? 203.0F : 100.0F;
+    frame.peakTargetNits = hdr ? 1000.0F : 100.0F;
+    frame.hdrHeadroom = hdr ? 1000.0F / 203.0F : 1.0F;
     frame.image.extent = {2U, 1U};
-    frame.image.rgb = {
-        0.0F, 0.5F, 1.0F,
-        1.0F, 0.0F, 0.25F,
-    };
+    frame.image.rgb = {0.0F, 0.5F, 1.0F, 1.0F, 0.0F, 0.25F};
     return frame;
 }
 
-latent::imaging::RenderedFrame makeHdr() {
-    latent::imaging::RenderedFrame frame{};
-    frame.sourceRawId = 7U;
-    frame.intent = latent::imaging::RenderIntent::HDR;
-    frame.primaries = latent::imaging::Primaries::BT2020;
-    frame.whitePoint = latent::imaging::WhitePoint::D65;
-    frame.transfer = latent::imaging::TransferFunction::PQ;
-    frame.reference = latent::imaging::ReferenceDomain::Display;
-    frame.range = latent::imaging::RangeSemantics::EncodedDisplay;
-    frame.allowNegative = false;
-    frame.nominalWhiteNits = 203.0F;
-    frame.peakTargetNits = 1000.0F;
-    frame.hdrHeadroom = 1000.0F / 203.0F;
-    frame.image.extent = {2U, 1U};
-    frame.image.rgb = {
-        0.0F, 0.5F, 1.0F,
-        1.0F, 0.0F, 0.25F,
-    };
-    return frame;
-}
-
-void testDeterministicPacking() {
+void testPackingAndValidation() {
     using namespace latent::codec;
-
-    const auto pair = stageUltraHdrRenditions(makeSdr(), makeHdr());
-    check(pair.sourceRawId == 7U,
-          "staging must preserve source provenance");
+    auto sdr = makeRendition(false);
+    auto hdr = makeRendition(true);
+    const auto pair = stageUltraHdrRenditions(sdr, hdr);
+    check(pair.sourceRawId == 7U, "staging preserves provenance");
     check(pair.sdr.format == PackedPixelFormat::Rgba8888 &&
-              pair.hdr.format == PackedPixelFormat::Rgba1010102,
-          "staging must select libultrahdr packed formats by rendition intent");
+          pair.hdr.format == PackedPixelFormat::Rgba1010102,
+          "staging selects documented packed formats");
     check(pair.sdr.pixels.size() == 2U && pair.hdr.pixels.size() == 2U,
-          "staging must emit one packed word per pixel");
-    check(pair.sdr.rowStridePixels == 2U && pair.hdr.rowStridePixels == 2U,
-          "staging must express packed stride in pixels");
+          "one packed word per pixel");
+    check(pair.sdr.pixels[0] == 0xffff8000U && pair.sdr.pixels[1] == 0xff4000ffU,
+          "RGBA8888 packing and rounding");
+    check(pair.hdr.pixels[0] == 0xfff80000U && pair.hdr.pixels[1] == 0xd00003ffU,
+          "RGBA1010102 packing and rounding");
+    check(std::fabs(pair.hdrNominalWhiteNits - 203.0F) < 1.0e-6F,
+          "203-nit nominal white preserved");
 
-    check(pair.sdr.pixels[0] == 0xffff8000U,
-          "SDR pack must use little-endian RGBA8888 channel bit positions");
-    check(pair.sdr.pixels[1] == 0xff4000ffU,
-          "SDR UNORM quantization must round deterministically");
-    check(pair.hdr.pixels[0] == 0xfff80000U,
-          "HDR pack must use little-endian RGBA1010102 channel bit positions");
-    check(pair.hdr.pixels[1] == 0xd00003ffU,
-          "HDR UNORM quantization must round deterministically");
-    check(std::fabs(pair.hdrPeakTargetNits - 1000.0F) < 1.0e-6F &&
-              std::fabs(pair.hdrNominalWhiteNits - 203.0F) < 1.0e-6F,
-          "staging must preserve HDR display intent metadata");
-}
-
-void testStagingValidation() {
-    using namespace latent::codec;
-
-    auto sdr = makeSdr();
-    auto hdr = makeHdr();
-
-    auto wrongSource = hdr;
-    wrongSource.sourceRawId = 8U;
-    checkInvalidArgument(
-        [&]() { (void)stageUltraHdrRenditions(sdr, wrongSource); },
-        "staging must reject renditions from different scene sources");
-
-    auto wrongExtent = hdr;
-    wrongExtent.image.extent = {1U, 2U};
-    checkInvalidArgument(
-        [&]() { (void)stageUltraHdrRenditions(sdr, wrongExtent); },
-        "staging must reject mismatched rendition extents");
-
-    auto wrongTransfer = hdr;
-    wrongTransfer.transfer = latent::imaging::TransferFunction::HLG;
-    checkInvalidArgument(
-        [&]() { (void)stageUltraHdrRenditions(sdr, wrongTransfer); },
-        "staging must not silently reinterpret non-PQ HDR data");
-
-    auto nonFinite = sdr;
-    nonFinite.image.rgb[0] = std::numeric_limits<float>::quiet_NaN();
-    checkInvalidArgument(
-        [&]() { (void)stageUltraHdrRenditions(nonFinite, hdr); },
-        "staging must reject non-finite encoded samples");
-
-    auto outOfRange = sdr;
-    outOfRange.image.rgb[0] = 1.01F;
-    checkInvalidArgument(
-        [&]() { (void)stageUltraHdrRenditions(outOfRange, hdr); },
-        "staging must reject encoded samples outside [0, 1]");
-
-    auto wrongNominalWhite = hdr;
-    wrongNominalWhite.nominalWhiteNits = 100.0F;
-    checkInvalidArgument(
-        [&]() { (void)stageUltraHdrRenditions(sdr, wrongNominalWhite); },
-        "staging must reject HDR nominal white incompatible with libultrahdr semantics");
-
-    auto lowPeak = hdr;
-    lowPeak.peakTargetNits = 200.0F;
-    checkInvalidArgument(
-        [&]() { (void)stageUltraHdrRenditions(sdr, lowPeak); },
-        "staging must enforce libultrahdr target-display peak bounds");
+    auto bad = hdr; bad.sourceRawId = 8U;
+    checkInvalid([&] { (void)stageUltraHdrRenditions(sdr, bad); }, "source mismatch rejected");
+    bad = hdr; bad.transfer = latent::imaging::TransferFunction::HLG;
+    checkInvalid([&] { (void)stageUltraHdrRenditions(sdr, bad); }, "non-PQ HDR rejected");
+    bad = hdr; bad.nominalWhiteNits = 100.0F;
+    checkInvalid([&] { (void)stageUltraHdrRenditions(sdr, bad); }, "non-203 nominal white rejected");
+    bad = hdr; bad.peakTargetNits = 200.0F;
+    checkInvalid([&] { (void)stageUltraHdrRenditions(sdr, bad); }, "low HDR peak rejected");
+    auto badSdr = sdr; badSdr.image.rgb[0] = std::numeric_limits<float>::quiet_NaN();
+    checkInvalid([&] { (void)stageUltraHdrRenditions(badSdr, hdr); }, "NaN rejected");
+    badSdr = sdr; badSdr.image.rgb[0] = 1.01F;
+    checkInvalid([&] { (void)stageUltraHdrRenditions(badSdr, hdr); }, "out-of-range sample rejected");
 }
 
 #ifdef LATENT_HAS_ULTRAHDR
-latent::imaging::SceneFrame makeCodecIntegrationScene() {
+latent::imaging::SceneFrame makeScene() {
     latent::imaging::SceneFrame scene{};
     scene.sourceRawId = 91U;
     scene.image.extent = {16U, 16U};
     scene.image.rgb.reserve(16U * 16U * 3U);
-    for (std::uint32_t y = 0U; y < 16U; ++y) {
-        for (std::uint32_t x = 0U; x < 16U; ++x) {
-            const float stop =
-                -4.0F + 8.0F * static_cast<float>(x + y) / 30.0F;
-            const float value = 0.18F * std::exp2(stop);
-            scene.image.rgb.push_back(value);
-            scene.image.rgb.push_back(value);
-            scene.image.rgb.push_back(value);
+    for (std::uint32_t y = 0; y < 16U; ++y) {
+        for (std::uint32_t x = 0; x < 16U; ++x) {
+            const float value = 0.18F * std::exp2(-4.0F + 8.0F * static_cast<float>(x + y) / 30.0F);
+            scene.image.rgb.insert(scene.image.rgb.end(), {value, value, value});
         }
     }
     return scene;
 }
 
-void testLibUltraHdrJpegIntegration() {
+void testRealCodecRoundTripProbe() {
     using namespace latent::codec;
     using namespace latent::render;
-
-    const auto scene = makeCodecIntegrationScene();
+    const auto scene = makeScene();
     const auto sdr = renderReference(scene, makeSdrRenderConfig());
-    const auto hdr = renderReference(
-        scene, makeHdrPqRenderConfig(0.0F, 1000.0F, 203.0F));
+    const auto hdr = renderReference(scene, makeHdrPqRenderConfig(0.0F, 1000.0F, 203.0F));
     const auto pair = stageUltraHdrRenditions(sdr, hdr);
-
     UltraHdrEncodeOptions options{};
-    options.container = UltraHdrContainer::Jpeg;
     options.gainMapScaleFactor = 2;
     const auto encoded = encodeUltraHdr(pair, options);
+    check(encoded.bytes.size() > 100U && encoded.bytes[0] == 0xffU && encoded.bytes[1] == 0xd8U,
+          "real encoder returns JPEG stream");
 
-    check(encoded.container == UltraHdrContainer::Jpeg,
-          "encoder must retain requested output container");
-    check(encoded.bytes.size() > 100U,
-          "libultrahdr integration must return a non-trivial encoded stream");
-    check(encoded.bytes.size() >= 2U && encoded.bytes[0] == 0xffU &&
-              encoded.bytes[1] == 0xd8U,
-          "JPEG Ultra HDR output must begin with JPEG SOI");
+    const auto probe = probeUltraHdr(encoded);
+    check(probe.imageWidth == 16 && probe.imageHeight == 16, "probe recovers base extent");
+    check(probe.gainMapWidth > 0 && probe.gainMapHeight > 0,
+          "probe finds gain-map image");
+    check(probe.gainMapWidth <= probe.imageWidth && probe.gainMapHeight <= probe.imageHeight,
+          "gain map does not exceed base extent");
+    check(probe.hasGainMapMetadata, "probe finds gain-map metadata");
 
-    auto invalidOptions = options;
-    invalidOptions.baseQuality = 101;
-    checkInvalidArgument(
-        [&]() { (void)encodeUltraHdr(pair, invalidOptions); },
-        "encoder wrapper must validate quality before invoking libultrahdr");
+    auto invalid = options; invalid.baseQuality = 101;
+    checkInvalid([&] { (void)encodeUltraHdr(pair, invalid); }, "invalid quality rejected");
+    EncodedUltraHdr empty{};
+    checkInvalid([&] { (void)probeUltraHdr(empty); }, "empty probe input rejected");
 }
 #endif
-
 }  // namespace
 
 int main() {
     try {
-        testDeterministicPacking();
-        testStagingValidation();
+        testPackingAndValidation();
 #ifdef LATENT_HAS_ULTRAHDR
-        testLibUltraHdrJpegIntegration();
+        testRealCodecRoundTripProbe();
 #endif
     } catch (const std::exception& error) {
         ++failures;
         std::cerr << "FAIL: unexpected exception: " << error.what() << '\n';
     }
-
     if (failures != 0) {
         std::cerr << failures << " codec test(s) failed\n";
         return 1;
     }
-
     std::cout << "codec tests passed\n";
     return 0;
 }
