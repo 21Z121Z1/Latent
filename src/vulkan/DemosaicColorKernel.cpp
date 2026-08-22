@@ -20,7 +20,7 @@ struct PushParams {
     std::uint32_t pad0;
     std::uint32_t pad1;
     std::uint32_t pad2;
-    std::array<float, 9> matrixValues;   // column-major
+    std::array<float, 9> matrixValues;   // row-major, matching Matrix3f
     float sceneScale;
     std::uint32_t pad3;
     std::uint32_t pad4;
@@ -31,10 +31,6 @@ struct PushParams {
 static_assert(sizeof(PushParams) == 84U);
 static_assert(offsetof(PushParams, matrixValues) == 32U);
 static_assert(offsetof(PushParams, sceneScale) == 68U);
-
-std::array<float, 9> toColumnMajor(const std::array<float, 9>& rowMajor) {
-    return rowMajor;
-}
 
 }  // namespace
 
@@ -74,7 +70,7 @@ std::vector<std::uint16_t> DemosaicColorKernel::run(
                                   imaging::DemosaicMethod::MalvarHeCutler2004
                               ? 1U
                               : 0U;
-    push.matrixValues = toColumnMajor(params.cameraToScene);
+    push.matrixValues = params.cameraToScene;
     push.sceneScale = params.sceneScale;
 
     // Pack the uint16 half-bit samples into little-endian uint32 pairs,
