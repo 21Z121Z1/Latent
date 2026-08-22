@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -15,6 +16,9 @@
 
 namespace latent::codec {
 namespace {
+
+constexpr float kUltraHdrSdrWhiteNits = 203.0F;
+constexpr float kWhiteToleranceNits = 1.0e-3F;
 
 void requireOk(const uhdr_error_info_t& status, const char* operation) {
     if (status.error_code == UHDR_CODEC_OK) {
@@ -66,9 +70,16 @@ void validateRenditions(const UltraHdrRenditionPair& pair) {
         throw std::invalid_argument(
             "libultrahdr staged renditions require identical non-zero extents");
     }
+
     const std::uint64_t pixelCount = pair.sdr.extent.pixelCount();
-    if (pair.sdr.pixels.size() != static_cast<std::size_t>(pixelCount) ||
-        pair.hdr.pixels.size() != static_cast<std::size_t>(pixelCount)) {
+    if (pixelCount >
+        static_cast<std::uint64_t>(std::numeric_limits<std::size_t>::max())) {
+        throw std::invalid_argument(
+            "libultrahdr staged extent is too large for host indexing");
+    }
+    const std::size_t hostPixelCount = static_cast<std::size_t>(pixelCount);
+    if (pair.sdr.pixels.size() != hostPixelCount ||
+        pair.hdr.pixels.size() != hostPixelCount) {
         throw std::invalid_argument(
             "libultrahdr staged pixel payload does not match rendition extent");
     }
@@ -76,8 +87,14 @@ void validateRenditions(const UltraHdrRenditionPair& pair) {
         pair.hdr.rowStridePixels < pair.hdr.extent.width) {
         throw std::invalid_argument("libultrahdr row stride is smaller than width");
     }
+    if (!std::isfinite(pair.hdrNominalWhiteNits) ||
+        std::fabs(pair.hdrNominalWhiteNits - kUltraHdrSdrWhiteNits) >
+            kWhiteToleranceNits) {
+        throw std::invalid_argument(
+            "current libultrahdr gain-map semantics require 203-nit HDR nominal white");
+    }
     if (!std::isfinite(pair.hdrPeakTargetNits) ||
-        pair.hdrPeakTargetNits < 203.0F ||
+        pair.hdrPeakTargetNits < kUltraHdrSdrWhiteNits ||
         pair.hdrPeakTargetNits > 10000.0F) {
         throw std::invalid_argument(
             "libultrahdr target display peak must be in [203, 10000] nits");
