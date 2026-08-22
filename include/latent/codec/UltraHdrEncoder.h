@@ -32,6 +32,14 @@ struct EncodedUltraHdr {
     std::vector<std::uint8_t> bytes;
 };
 
+struct UltraHdrProbe {
+    int imageWidth = 0;
+    int imageHeight = 0;
+    int gainMapWidth = 0;
+    int gainMapHeight = 0;
+    bool hasGainMapMetadata = false;
+};
+
 #ifdef LATENT_HAS_ULTRAHDR
 // Encodes an explicit SDR/HDR rendition pair using libultrahdr. Latent does
 // not implement gain-map math, metadata quantization, or container packing;
@@ -39,6 +47,11 @@ struct EncodedUltraHdr {
 [[nodiscard]] EncodedUltraHdr encodeUltraHdr(
     const UltraHdrRenditionPair& renditions,
     const UltraHdrEncodeOptions& options = {});
+
+// Parses the encoded stream with libultrahdr's own decoder probe. This is
+// intentionally metadata-only: it validates that the container exposes both
+// the base rendition and a gain map without paying for a full image decode.
+[[nodiscard]] UltraHdrProbe probeUltraHdr(const EncodedUltraHdr& encoded);
 #endif
 
 }  // namespace latent::codec
