@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cstring>
 #include <stdexcept>
+#include <string>
 #include <utility>
 
 namespace latent::vulkan {
@@ -85,7 +86,7 @@ std::unique_ptr<ComputeRunner> ComputeRunner::tryCreate(std::string* detail) {
     const VkDescriptorPoolCreateInfo descriptorPoolInfo{
         VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
         nullptr,
-        VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT,
+        0U,
         256U,
         1U,
         &poolSize,
@@ -149,8 +150,14 @@ ComputeRunner::Buffer ComputeRunner::createStorageBuffer(VkDeviceSize size) {
 
     VkMemoryAllocateInfo allocate{
         VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, nullptr, requirements.size, 0U};
-    allocate.memoryTypeIndex =
-        findHostVisibleMemoryType(physicalDevice_, requirements.memoryTypeBits);
+    try {
+        allocate.memoryTypeIndex =
+            findHostVisibleMemoryType(physicalDevice_, requirements.memoryTypeBits);
+    } catch (...) {
+        vkDestroyBuffer(device_, buffer.handle, nullptr);
+        buffer.handle = VK_NULL_HANDLE;
+        throw;
+    }
 
     if (vkAllocateMemory(device_, &allocate, nullptr, &buffer.memory) !=
         VK_SUCCESS) {
@@ -365,16 +372,17 @@ void ComputeRunner::dispatch(
     }
 
     VkCommandBuffer command = VK_NULL_HANDLE;
-    const auto cleanupSubmission = [&]() noexcept {
+    const auto releaseCommand = [&]() noexcept {
         if (command != VK_NULL_HANDLE) {
             vkFreeCommandBuffers(device_, commandPool_, 1U, &command);
             command = VK_NULL_HANDLE;
         }
-        if (descriptorSet != VK_NULL_HANDLE) {
-            (void)vkFreeDescriptorSets(
-                device_, descriptorPool_, 1U, &descriptorSet);
-            descriptorSet = VK_NULL_HANDLE;
+    };
+    const auto resetDescriptors = [&]() {
+        if (vkResetDescriptorPool(device_, descriptorPool_, 0U) != VK_SUCCESS) {
+            throw std::runtime_error("vkResetDescriptorPool failed");
         }
+        descriptorSet = VK_NULL_HANDLE;
     };
 
     try {
@@ -447,13 +455,21 @@ void ComputeRunner::dispatch(
             throw std::runtime_error("vkQueueWaitIdle failed");
         }
 
-        cleanupSubmission();
+        // This runner is deliberately synchronous and owns the descriptor
+        // pool exclusively. Once the queue is idle and the command buffer is
+        // freed, resetting the whole pool is stronger than freeing one set:
+        // all descriptor storage is recycled without accumulating
+        // fragmentation across different kernel layouts.
+        releaseCommand();
+        resetDescriptors();
     } catch (...) {
-        // vkQueueWaitIdle is required before freeing a submitted command
-        // buffer if an error happened after submission. A device-loss error
-        // may be returned again; cleanup still releases host-side handles.
+        // If submission happened, wait for all possible descriptor use to
+        // finish before invalidating the pool. Device loss can make the wait
+        // fail again; release host-side command resources regardless.
         (void)vkQueueWaitIdle(queue_);
-        cleanupSubmission();
+        releaseCommand();
+        (void)vkResetDescriptorPool(device_, descriptorPool_, 0U);
+        descriptorSet = VK_NULL_HANDLE;
         throw;
     }
 }
