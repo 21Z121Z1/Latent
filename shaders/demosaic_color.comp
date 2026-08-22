@@ -161,12 +161,10 @@ void main()
     const uint y = pixel / params.width;
     const uint x = pixel % params.width;
     const uint center = channelAt(x, y);
-    const uint centerRgb =
-        center == 0u ? 0u : (center == 3u ? 2u : 1u);
 
     float cameraRgb[3];
     for (uint target = 0u; target < 3u; ++target) {
-        if (target == centerRgb) {
+        if (target == center) {
             // Known site: the sample passes through untouched.
             cameraRgb[target] = sampleAtLinear(pixel);
         } else if (params.demosaicMethod == 1u) {
