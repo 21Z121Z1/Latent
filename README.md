@@ -16,7 +16,7 @@ The first implementation slice establishes:
 - a Vulkan capability model where Vulkan 1.1 compute is the baseline and AHardwareBuffer/FP16 features are optional fast paths;
 - differential-friendly CTest coverage and CI.
 
-It intentionally does **not** claim that AHardwareBuffer import, burst reconstruction, complete SDR/HDR rendering, or Ultra HDR encoding are implemented yet.
+It intentionally does **not** claim that AHardwareBuffer import, burst reconstruction, production Vulkan rendering, or Ultra HDR encoding are implemented yet.
 
 ## Color science and demosaic
 
@@ -85,6 +85,31 @@ The sixth slice extends GPU execution to the RAW-to-scene boundary:
   aspect-ratio extents, both demosaic methods, and lens shading on/off,
   with zero-NaN, sign-preservation, median/p99 relative-error, and scaled
   absolute-error gates.
+
+## Independent SDR/HDR reference rendering
+
+The next slice establishes the output-side semantic boundary before codec
+integration:
+
+- scene luminance analysis is invariant to the purely representational
+  `sceneScaleEV` coordinate choice;
+- `renderExposureEV` is applied only after undoing `sceneScaleEV`, so capture
+  radiometry and final picture brightness remain separate controls;
+- one `SceneFrame` is rendered independently to a Rec.709/sRGB SDR rendition
+  and a BT.2020/PQ HDR rendition with explicit nominal-white, target-peak, and
+  headroom metadata;
+- the official-ACES-derived scalar tone-scale primitive is applied to
+  luminance, while output-primary conversion and a deterministic neutral-axis
+  gamut compression are explicit rendering operations;
+- encoded display pixels are carried by `RenderedFrame`, while the original
+  scene master remains untouched even when it contains negative or >1 values;
+- tests cover scene-scale invariance, independent SDR/HDR intent, exposure
+  separation, gamut/negative handling, provenance, and invalid inputs.
+
+This renderer is a reference contract, not a claim to implement the complete
+ACES 2 Output Transform. Production Vulkan rendering and libultrahdr remain
+separate milestones; gain-map math will be delegated to libultrahdr from the
+explicit SDR/HDR renditions rather than reimplemented in Latent.
 
 ## License
 
