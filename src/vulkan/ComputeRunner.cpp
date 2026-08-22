@@ -65,13 +65,13 @@ std::unique_ptr<ComputeRunner> ComputeRunner::tryCreate(std::string* detail) {
 
     const VkDescriptorPoolSize poolSize{
         VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-        64U,
+        4096U,
     };
     const VkDescriptorPoolCreateInfo descriptorPoolInfo{
         VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
         nullptr,
         0U,
-        16U,
+        256U,
         1U,
         &poolSize,
     };

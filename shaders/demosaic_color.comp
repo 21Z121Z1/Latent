@@ -1,0 +1,209 @@
+#version 450
+
+// Latent K1b fused kernel: FP16 gained Bayer -> demosaic (Malvar-He-Cutler
+// or baseline box average) -> camera-to-scene color matrix -> scene scale ->
+// packed FP16 RGBA. All accumulation in FP32; storage in IEEE binary16 via
+// packHalf2x16. Kernel coefficient tables mirror the CPU reference exactly.
+
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+layout(std430, set = 0, binding = 0) readonly buffer InBayer
+{
+    uint inPairs[];   // two little-endian fp16 samples per uint32
+};
+
+layout(std430, set = 0, binding = 1) writeonly buffer OutScene
+{
+    uint outRgba[];   // two uint32 per pixel: (R,G) then (B,0)
+};
+
+layout(push_constant) uniform Params
+{
+    uint sampleCount;
+    uint width;
+    uint height;
+    uint cfaPattern;
+    uint demosaicMethod;      // 0 = baseline box average, 1 = Malvar-He-Cutler
+    uint pad0;
+    uint pad1;
+    uint pad2;
+    float matrixValues[9];    // camera->scene, row-major
+    float sceneScale;
+    uint pad3;
+    uint pad4;
+    uint pad5;
+} params;
+
+const float kTargetAtGreenRow[5][5] = float[][](
+    float[](0.0F, 0.0F, 0.0625F, 0.0F, 0.0F),
+    float[](0.0F, -0.125F, 0.0F, -0.125F, 0.0F),
+    float[](-0.125F, 0.5F, 0.625F, 0.5F, -0.125F),
+    float[](0.0F, -0.125F, 0.0F, -0.125F, 0.0F),
+    float[](0.0F, 0.0F, 0.0625F, 0.0F, 0.0F));
+
+const float kTargetAtGreenColumn[5][5] = float[][](
+    float[](0.0F, 0.0F, -0.125F, 0.0F, 0.0F),
+    float[](0.0F, -0.125F, 0.5F, -0.125F, 0.0F),
+    float[](0.0625F, 0.0F, 0.625F, 0.0F, 0.0625F),
+    float[](0.0F, -0.125F, 0.5F, -0.125F, 0.0F),
+    float[](0.0F, 0.0F, -0.125F, 0.0F, 0.0F));
+
+const float kGreenAtRedBlue[5][5] = float[][](
+    float[](0.0F, 0.0F, -0.125F, 0.0F, 0.0F),
+    float[](0.0F, 0.0F, 0.25F, 0.0F, 0.0F),
+    float[](-0.125F, 0.25F, 0.5F, 0.25F, -0.125F),
+    float[](0.0F, 0.0F, 0.25F, 0.0F, 0.0F),
+    float[](0.0F, 0.0F, -0.125F, 0.0F, 0.0F));
+
+const float kTargetAtOppositeColor[5][5] = float[][](
+    float[](0.0F, 0.0F, -0.1875F, 0.0F, 0.0F),
+    float[](0.0F, 0.25F, 0.0F, 0.25F, 0.0F),
+    float[](-0.1875F, 0.0F, 0.75F, 0.0F, -0.1875F),
+    float[](0.0F, 0.25F, 0.0F, 0.25F, 0.0F),
+    float[](0.0F, 0.0F, -0.1875F, 0.0F, 0.0F));
+
+// CFA channel numbering mirrors imaging::CfaChannel:
+// R=0, G0=1, G1=2, B=3. Demosaic target numbering is RGB: R=0, G=1, B=2.
+uint channelAt(uint x, uint y)
+{
+    const bool xOdd = (x & 1u) != 0u;
+    const bool yOdd = (y & 1u) != 0u;
+    switch (params.cfaPattern) {
+        case 0u:  // RGGB
+            return yOdd ? (xOdd ? 3u : 2u) : (xOdd ? 1u : 0u);
+        case 1u:  // GRBG
+            return yOdd ? (xOdd ? 2u : 3u) : (xOdd ? 0u : 1u);
+        case 2u:  // GBRG
+            return yOdd ? (xOdd ? 2u : 0u) : (xOdd ? 3u : 1u);
+        default:  // BGGR
+            return yOdd ? (xOdd ? 0u : 2u) : (xOdd ? 1u : 3u);
+    }
+}
+
+uint rgbChannelOfCfa(uint cfaChannel)
+{
+    if (cfaChannel == 0u) {
+        return 0u;
+    }
+    if (cfaChannel == 3u) {
+        return 2u;
+    }
+    return 1u;
+}
+
+vec2 sampleHalfPair(uint linearIndex)
+{
+    const uint clamped = min(linearIndex, params.sampleCount - 1u);
+    const uint pairIndex = clamped >> 1U;
+    const uint packedIn = inPairs[pairIndex];
+    return unpackHalf2x16(packedIn);
+}
+
+float sampleAtLinear(uint linearIndex)
+{
+    const vec2 pair = sampleHalfPair(linearIndex);
+    return (linearIndex & 1u) == 0u ? pair.x : pair.y;
+}
+
+// Replicate-clamped fetch with signed coordinates so MHC neighborhood offsets
+// match reference::clampedSample exactly and never wrap at the borders.
+float sampleClamped(int x, int y)
+{
+    const uint cx = uint(min(max(x, 0), int(params.width) - 1));
+    const uint cy = uint(min(max(y, 0), int(params.height) - 1));
+    return sampleAtLinear(cy * params.width + cx);
+}
+
+float baselinePixel(uint x, uint y, uint targetRgb)
+{
+    float sum = 0.0F;
+    uint count = 0U;
+
+    // The CPU baseline enumerates only real coordinates in the 3x3
+    // neighborhood; unlike MHC, it does not replicate border samples.
+    const uint x0 = x == 0u ? 0u : x - 1u;
+    const uint y0 = y == 0u ? 0u : y - 1u;
+    const uint x1 = x + 1u < params.width ? x + 1u : x;
+    const uint y1 = y + 1u < params.height ? y + 1u : y;
+
+    for (uint yy = y0; yy <= y1; ++yy) {
+        for (uint xx = x0; xx <= x1; ++xx) {
+            if (rgbChannelOfCfa(channelAt(xx, yy)) == targetRgb) {
+                sum += sampleAtLinear(yy * params.width + xx);
+                count++;
+            }
+        }
+    }
+    return sum / float(count);
+}
+
+float mhcPixel(uint x, uint y, uint targetRgb)
+{
+    float sum = 0.0F;
+    const uint centerCfa = channelAt(x, y);
+    const bool centerGreen = centerCfa == 1u || centerCfa == 2u;
+    const uint neighborX =
+        x + 1u < params.width ? x + 1u : (x > 0u ? x - 1u : x);
+    const bool rowAligned =
+        rgbChannelOfCfa(channelAt(neighborX, y)) == targetRgb;
+
+    for (uint dy = 0u; dy < 5u; ++dy) {
+        for (uint dx = 0u; dx < 5u; ++dx) {
+            float weight = 0.0F;
+            if (centerGreen) {
+                weight = rowAligned ? kTargetAtGreenRow[dy][dx]
+                                    : kTargetAtGreenColumn[dy][dx];
+            } else if (targetRgb == 1u) {
+                weight = kGreenAtRedBlue[dy][dx];
+            } else {
+                weight = kTargetAtOppositeColor[dy][dx];
+            }
+            if (weight != 0.0F) {
+                sum += weight *
+                       sampleClamped(int(x) + int(dx) - 2,
+                                     int(y) + int(dy) - 2);
+            }
+        }
+    }
+    return sum;
+}
+
+void main()
+{
+    const uint pixel = gl_GlobalInvocationID.x;
+    if (pixel >= params.width * params.height) {
+        return;
+    }
+
+    const uint y = pixel / params.width;
+    const uint x = pixel % params.width;
+    const uint centerRgb = rgbChannelOfCfa(channelAt(x, y));
+
+    float cameraRgb[3];
+    for (uint target = 0u; target < 3u; ++target) {
+        if (target == centerRgb) {
+            // Known site: R, either green phase, or B passes through untouched.
+            cameraRgb[target] = sampleAtLinear(pixel);
+        } else if (params.demosaicMethod == 1u) {
+            cameraRgb[target] = mhcPixel(x, y, target);
+        } else {
+            cameraRgb[target] = baselinePixel(x, y, target);
+        }
+    }
+
+    // Row-major storage mirrors Matrix3f::values and Matrix3f::apply exactly.
+    float sceneValue[3];
+    for (uint target = 0u; target < 3u; ++target) {
+        sceneValue[target] =
+            params.matrixValues[target * 3u + 0u] * cameraRgb[0] +
+            params.matrixValues[target * 3u + 1u] * cameraRgb[1] +
+            params.matrixValues[target * 3u + 2u] * cameraRgb[2];
+    }
+
+    const float scale = params.sceneScale;
+    const uint base = pixel * 2u;
+    outRgba[base + 0u] = packHalf2x16(
+        vec2(sceneValue[0] * scale, sceneValue[1] * scale));
+    outRgba[base + 1u] = packHalf2x16(
+        vec2(sceneValue[2] * scale, 0.0F));
+}

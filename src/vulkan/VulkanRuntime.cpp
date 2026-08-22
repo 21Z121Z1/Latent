@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cstring>
 #include <volk.h>
+#include <vulkan/vulkan_beta.h>
 
 namespace latent::vulkan {
 namespace {
@@ -161,12 +162,13 @@ RuntimeAvailability VulkanRuntime::tryInitialize() {
         return availability;
     }
 
-    VkPhysicalDeviceVulkan11Properties properties11;
-    properties11.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_PROPERTIES;
-    properties11.pNext = nullptr;
+    VkPhysicalDeviceSubgroupProperties subgroupProperties;
+    subgroupProperties.sType =
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_PROPERTIES;
+    subgroupProperties.pNext = nullptr;
     VkPhysicalDeviceProperties2 properties;
     properties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
-    properties.pNext = &properties11;
+    properties.pNext = &subgroupProperties;
     vkGetPhysicalDeviceProperties2(runtime.physicalDevice, &properties);
 
     VkPhysicalDeviceVulkan11Features features11;
@@ -195,6 +197,9 @@ RuntimeAvailability VulkanRuntime::tryInitialize() {
             runtime.physicalDevice, nullptr, &extensionCount, extensions.data());
     }
 
+    const bool portabilitySubset = hasExtension(
+        VK_KHR_PORTABILITY_SUBSET_EXTENSION_NAME, extensions);
+
     DeviceCaps caps{};
     caps.apiVersion = decodeApiVersion(properties.properties.apiVersion);
     caps.computeQueue = true;
@@ -213,8 +218,8 @@ RuntimeAvailability VulkanRuntime::tryInitialize() {
     caps.timelineSemaphore = features12.timelineSemaphore != 0U;
     caps.synchronization2 = features13.synchronization2 != 0U;
     caps.subgroupOperations =
-        (properties11.subgroupSupportedStages & VK_SHADER_STAGE_COMPUTE_BIT) != 0U &&
-        (properties11.subgroupSupportedOperations &
+        (subgroupProperties.supportedStages & VK_SHADER_STAGE_COMPUTE_BIT) != 0U &&
+        (subgroupProperties.supportedOperations &
          VK_SUBGROUP_FEATURE_BASIC_BIT) != 0U;
     caps.descriptorIndexing = features12.descriptorIndexing != 0U;
     caps.shaderFloatControls =
@@ -244,8 +249,16 @@ RuntimeAvailability VulkanRuntime::tryInitialize() {
     deviceInfo.pQueueCreateInfos = &queueInfo;
     deviceInfo.enabledLayerCount = 0U;
     deviceInfo.ppEnabledLayerNames = nullptr;
-    deviceInfo.enabledExtensionCount = 0U;
-    deviceInfo.ppEnabledExtensionNames = nullptr;
+    std::vector<const char*> enabledDeviceExtensions;
+    if (portabilitySubset) {
+        enabledDeviceExtensions.push_back(
+            VK_KHR_PORTABILITY_SUBSET_EXTENSION_NAME);
+    }
+    deviceInfo.enabledExtensionCount =
+        static_cast<std::uint32_t>(enabledDeviceExtensions.size());
+    deviceInfo.ppEnabledExtensionNames =
+        enabledDeviceExtensions.empty() ? nullptr
+                                        : enabledDeviceExtensions.data();
     deviceInfo.pEnabledFeatures = nullptr;
 
     runtime.caps = caps;
