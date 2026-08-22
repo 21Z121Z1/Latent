@@ -16,7 +16,7 @@ The first implementation slice establishes:
 - a Vulkan capability model where Vulkan 1.1 compute is the baseline and AHardwareBuffer/FP16 features are optional fast paths;
 - differential-friendly CTest coverage and CI.
 
-It intentionally does **not** claim that AHardwareBuffer import, burst reconstruction, production Vulkan rendering, or Ultra HDR encoding are implemented yet.
+It intentionally does **not** claim that AHardwareBuffer import, burst reconstruction, production Vulkan rendering, Android capture integration, or production HEIF/AVIF output are implemented yet.
 
 ## Color science and demosaic
 
@@ -107,9 +107,30 @@ integration:
   separation, gamut/negative handling, provenance, and invalid inputs.
 
 This renderer is a reference contract, not a claim to implement the complete
-ACES 2 Output Transform. Production Vulkan rendering and libultrahdr remain
-separate milestones; gain-map math will be delegated to libultrahdr from the
-explicit SDR/HDR renditions rather than reimplemented in Latent.
+ACES 2 Output Transform. Production Vulkan rendering remains a separate
+milestone.
+
+## Ultra HDR codec staging and integration
+
+The codec slice keeps standards/container behavior outside the imaging core:
+
+- `latent::codec` deterministically stages Rec.709/sRGB SDR renditions as
+  aligned RGBA8888 and BT.2020/PQ HDR renditions as aligned RGBA1010102;
+- staging validates display-domain semantics, common source/extent, encoded
+  sample range, D65 output white, and Ultra HDR target-peak bounds;
+- `LATENT_ENABLE_ULTRAHDR=ON` enables an adapter to an externally built
+  libultrahdr 2.x installation; libultrahdr is deliberately not brought into
+  Latent with `FetchContent`, so its directory-wide fast-math build settings
+  cannot contaminate the deterministic FP32 reference core;
+- the adapter supplies explicit `UHDR_SDR_IMG` and `UHDR_HDR_IMG` inputs and
+  delegates gain-map math, ISO 21496 metadata, and JPEG/HEIF/AVIF container
+  behavior to libultrahdr rather than reproducing the standard locally;
+- CI independently builds libultrahdr v2.0.2 and verifies a real Ultra HDR
+  JPEG encode from Latent's `SceneFrame -> SDR/HDR -> staging` path.
+
+HEIF/AVIF enum routing is present in the adapter, but the current CI validation
+uses the dependency-light JPEG path; production HEIF/AVIF validation remains a
+separate libheif/Android integration milestone.
 
 ## License
 
@@ -121,6 +142,17 @@ Apache-2.0. See [`LICENSE`](LICENSE).
 cmake -S . -B build -DLATENT_BUILD_TESTS=ON
 cmake --build build --parallel
 ctest --test-dir build --output-on-failure
+```
+
+To enable an externally installed libultrahdr 2.x codec:
+
+```bash
+cmake -S . -B build-uhdr \
+  -DLATENT_BUILD_TESTS=ON \
+  -DLATENT_ENABLE_ULTRAHDR=ON \
+  -DLATENT_ULTRAHDR_ROOT=/path/to/libultrahdr/install
+cmake --build build-uhdr --parallel
+ctest --test-dir build-uhdr --output-on-failure
 ```
 
 See [`docs/architecture.md`](docs/architecture.md) for invariants and staged implementation boundaries.
