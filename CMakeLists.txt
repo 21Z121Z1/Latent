@@ -80,6 +80,7 @@ set(LATENT_CORE_SOURCES
     src/reference/SensorLinearOps.cpp
     src/render/AcesToneScale.cpp
     src/render/OutputEncoding.cpp
+    src/render/ReferenceRenderer.cpp
     src/render/SceneAnalysis.cpp
     src/vulkan/DeviceCaps.cpp
     src/vulkan/IngressPlan.cpp
