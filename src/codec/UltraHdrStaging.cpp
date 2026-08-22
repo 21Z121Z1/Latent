@@ -11,6 +11,9 @@
 namespace latent::codec {
 namespace {
 
+constexpr float kUltraHdrSdrWhiteNits = 203.0F;
+constexpr float kWhiteToleranceNits = 1.0e-3F;
+
 void validateHostEndian() {
     if constexpr (std::endian::native != std::endian::little) {
         throw std::runtime_error(
@@ -70,13 +73,16 @@ void validateHdr(const imaging::RenderedFrame& hdr) {
             "HDR Ultra HDR staging requires a BT.2020/PQ HDR rendition");
     }
     if (!std::isfinite(hdr.nominalWhiteNits) ||
-        !std::isfinite(hdr.peakTargetNits) ||
-        hdr.nominalWhiteNits <= 0.0F ||
-        hdr.peakTargetNits < 203.0F ||
-        hdr.peakTargetNits > 10000.0F ||
-        hdr.nominalWhiteNits > hdr.peakTargetNits) {
+        std::fabs(hdr.nominalWhiteNits - kUltraHdrSdrWhiteNits) >
+            kWhiteToleranceNits) {
         throw std::invalid_argument(
-            "HDR Ultra HDR staging requires 0 < nominalWhite <= peak in [203, 10000] nits");
+            "current libultrahdr gain-map semantics require 203-nit HDR nominal white");
+    }
+    if (!std::isfinite(hdr.peakTargetNits) ||
+        hdr.peakTargetNits < kUltraHdrSdrWhiteNits ||
+        hdr.peakTargetNits > 10000.0F) {
+        throw std::invalid_argument(
+            "HDR Ultra HDR staging requires target peak in [203, 10000] nits");
     }
 }
 
