@@ -1555,7 +1555,8 @@ void testVulkanDemosaicColorDifferential() {
     }
 #endif
 
-    for (const auto& testCase : cases) {
+    for (std::size_t caseIndex = 0; caseIndex < cases.size(); ++caseIndex) {
+        const auto& testCase = cases[caseIndex];
         PreprocessParams preParams{};
         preParams.extent = testCase.extent;
         preParams.cfa = testCase.cfa;
@@ -1606,6 +1607,7 @@ void testVulkanDemosaicColorDifferential() {
         std::size_t outOfTolerance = 0U;
         std::size_t signMismatch = 0U;
         double worstAbsolute = 0.0;
+        std::size_t debugMismatchCount = 0U;
 
         const auto cameraAt = [&cpuRgb](std::uint32_t p, std::uint32_t c) {
             return cpuRgb.rgb[static_cast<std::size_t>(p) * 3U + c];
@@ -1651,6 +1653,27 @@ void testVulkanDemosaicColorDifferential() {
                     worstAbsolute = std::max(
                         worstAbsolute,
                         static_cast<double>(absoluteError));
+                    if (std::getenv("LATENT_DEMOSAIC_DEBUG") != nullptr &&
+                        debugMismatchCount < 5U) {
+                        const auto y = p / params.extent.width;
+                        const auto x = p % params.extent.width;
+                        const auto center =
+                            static_cast<std::uint32_t>(
+                                cfaChannelAt(testCase.cfa, x, y));
+                        const float cameraExpected = cameraAt(p, c);
+                        std::cout << "demosaic mismatch case=" << caseIndex
+                                  << " pixel=" << p << " x=" << x
+                                  << " y=" << y << " target=" << c
+                                  << " center=" << center
+                                  << " knownSite=" << (center == c)
+                                  << " expected=" << sceneExpected
+                                  << " cameraExpected=" << cameraExpected
+                                  << " actual=" << actualValue
+                                  << " expectedBits="
+                                  << floatToHalfBits(sceneExpected)
+                                  << " actualBits=" << actualBits << '\n';
+                        ++debugMismatchCount;
+                    }
                 }
 
                 if (std::fabs(sceneExpected) >
