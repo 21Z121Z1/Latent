@@ -56,6 +56,10 @@ void validateScene(const imaging::SceneFrame& scene) {
 }
 
 void validateConfig(const RenderConfig& config) {
+    if (config.intent != imaging::RenderIntent::SDR &&
+        config.intent != imaging::RenderIntent::HDR) {
+        throw std::invalid_argument("unsupported render intent");
+    }
     if (!std::isfinite(config.renderExposureEV)) {
         throw std::invalid_argument("renderExposureEV must be finite");
     }
@@ -249,7 +253,9 @@ imaging::RenderedFrame renderReference(
         const auto xyzD60 = ap1ToXyzD60.apply(exposedAp1);
         const float sceneLuminance = xyzD60[1];
         if (!(sceneLuminance > 0.0F) || !std::isfinite(sceneLuminance)) {
-            rendered.image.rgb.insert(rendered.image.rgb.end(), 3U, 0.0F);
+            const auto encodedBlack = encodeOutput({0.0F, 0.0F, 0.0F}, config);
+            rendered.image.rgb.insert(
+                rendered.image.rgb.end(), encodedBlack.begin(), encodedBlack.end());
             continue;
         }
 
@@ -261,12 +267,10 @@ imaging::RenderedFrame renderReference(
         const auto xyzD65 = d60ToD65.apply(xyzD60);
         const float adaptedLuminance = xyzD65[1];
         if (!(adaptedLuminance > 0.0F) || !std::isfinite(adaptedLuminance)) {
-            rendered.image.rgb.push_back(
-                config.intent == imaging::RenderIntent::SDR
-                    ? encodeSrgb(targetLuminance / config.peakTargetNits)
-                    : encodePqFromNits(targetLuminance));
-            rendered.image.rgb.push_back(rendered.image.rgb.back());
-            rendered.image.rgb.push_back(rendered.image.rgb.back());
+            const auto encodedNeutral = encodeOutput(
+                {targetLuminance, targetLuminance, targetLuminance}, config);
+            rendered.image.rgb.insert(
+                rendered.image.rgb.end(), encodedNeutral.begin(), encodedNeutral.end());
             continue;
         }
 
