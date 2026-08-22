@@ -78,6 +78,9 @@ set(LATENT_CORE_SOURCES
     src/reference/RawNormalize.cpp
     src/reference/ReferenceReconstruct.cpp
     src/reference/SensorLinearOps.cpp
+    src/render/AcesToneScale.cpp
+    src/render/OutputEncoding.cpp
+    src/render/SceneAnalysis.cpp
     src/vulkan/DeviceCaps.cpp
     src/vulkan/IngressPlan.cpp
 )
@@ -151,6 +154,25 @@ if(LATENT_BUILD_TESTS)
         endif()
     endif()
     add_test(NAME latent_tests COMMAND latent_tests)
+
+    add_executable(latent_render_tests tests/test_render.cpp)
+    target_link_libraries(latent_render_tests PRIVATE latent::core)
+    target_compile_features(latent_render_tests PRIVATE cxx_std_20)
+    target_compile_options(latent_render_tests PRIVATE
+        $<$<CXX_COMPILER_ID:GNU>:-ffp-contract=off>)
+    if(MSVC)
+        target_compile_options(latent_render_tests PRIVATE /W4)
+        if(LATENT_STRICT_WARNINGS)
+            target_compile_options(latent_render_tests PRIVATE /WX)
+        endif()
+    else()
+        target_compile_options(latent_render_tests PRIVATE
+            -Wall -Wextra -Wpedantic -Wconversion -Wshadow)
+        if(LATENT_STRICT_WARNINGS)
+            target_compile_options(latent_render_tests PRIVATE -Werror)
+        endif()
+    endif()
+    add_test(NAME latent_render_tests COMMAND latent_render_tests)
 
     if(LATENT_ENABLE_VULKAN_RUNTIME)
         add_executable(latent_compute_runner_lifetime_tests
