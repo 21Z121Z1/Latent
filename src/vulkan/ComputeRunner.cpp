@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cstring>
 #include <stdexcept>
+#include <string>
 #include <utility>
 
 namespace latent::vulkan {
@@ -28,6 +29,21 @@ std::uint32_t findHostVisibleMemoryType(
         }
     }
     throw std::runtime_error("no host-visible device memory type available");
+}
+
+void validateTransfer(
+    const ComputeRunner::Buffer& buffer,
+    const void* pointer,
+    std::size_t byteCount,
+    const char* operation) {
+    if (static_cast<VkDeviceSize>(byteCount) > buffer.size) {
+        throw std::invalid_argument(
+            std::string(operation) + " exceeds the buffer size");
+    }
+    if (byteCount > 0U && pointer == nullptr) {
+        throw std::invalid_argument(
+            std::string(operation) + " requires a non-null data pointer");
+    }
 }
 
 }  // namespace
@@ -106,6 +122,10 @@ ComputeRunner::~ComputeRunner() {
 }
 
 ComputeRunner::Buffer ComputeRunner::createStorageBuffer(VkDeviceSize size) {
+    if (size == 0U) {
+        throw std::invalid_argument("storage buffer size must be non-zero");
+    }
+
     Buffer buffer{};
     buffer.size = size;
 
@@ -130,8 +150,14 @@ ComputeRunner::Buffer ComputeRunner::createStorageBuffer(VkDeviceSize size) {
 
     VkMemoryAllocateInfo allocate{
         VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, nullptr, requirements.size, 0U};
-    allocate.memoryTypeIndex =
-        findHostVisibleMemoryType(physicalDevice_, requirements.memoryTypeBits);
+    try {
+        allocate.memoryTypeIndex =
+            findHostVisibleMemoryType(physicalDevice_, requirements.memoryTypeBits);
+    } catch (...) {
+        vkDestroyBuffer(device_, buffer.handle, nullptr);
+        buffer.handle = VK_NULL_HANDLE;
+        throw;
+    }
 
     if (vkAllocateMemory(device_, &allocate, nullptr, &buffer.memory) !=
         VK_SUCCESS) {
@@ -142,6 +168,10 @@ ComputeRunner::Buffer ComputeRunner::createStorageBuffer(VkDeviceSize size) {
 
     if (vkBindBufferMemory(device_, buffer.handle, buffer.memory, 0U) !=
         VK_SUCCESS) {
+        vkFreeMemory(device_, buffer.memory, nullptr);
+        vkDestroyBuffer(device_, buffer.handle, nullptr);
+        buffer.memory = VK_NULL_HANDLE;
+        buffer.handle = VK_NULL_HANDLE;
         throw std::runtime_error("vkBindBufferMemory failed");
     }
 
@@ -157,14 +187,21 @@ void ComputeRunner::destroyBuffer(Buffer& buffer) {
         vkFreeMemory(device_, buffer.memory, nullptr);
         buffer.memory = VK_NULL_HANDLE;
     }
+    buffer.size = 0U;
 }
 
 void ComputeRunner::upload(
     const Buffer& buffer,
     const void* data,
     std::size_t byteCount) {
+    validateTransfer(buffer, data, byteCount, "buffer upload");
+    if (byteCount == 0U) {
+        return;
+    }
+
     void* mapped = nullptr;
-    if (vkMapMemory(device_, buffer.memory, 0U, byteCount, 0U, &mapped) !=
+    if (vkMapMemory(device_, buffer.memory, 0U,
+                    static_cast<VkDeviceSize>(byteCount), 0U, &mapped) !=
         VK_SUCCESS) {
         throw std::runtime_error("vkMapMemory failed");
     }
@@ -173,8 +210,14 @@ void ComputeRunner::upload(
 }
 
 void ComputeRunner::download(const Buffer& buffer, void* out, std::size_t byteCount) {
+    validateTransfer(buffer, out, byteCount, "buffer download");
+    if (byteCount == 0U) {
+        return;
+    }
+
     void* mapped = nullptr;
-    if (vkMapMemory(device_, buffer.memory, 0U, byteCount, 0U, &mapped) !=
+    if (vkMapMemory(device_, buffer.memory, 0U,
+                    static_cast<VkDeviceSize>(byteCount), 0U, &mapped) !=
         VK_SUCCESS) {
         throw std::runtime_error("vkMapMemory failed");
     }
@@ -217,9 +260,6 @@ VkPipeline ComputeRunner::createComputePipeline(
         layoutBindings.data(),
     };
 
-    // The set layout and pipeline layout are intentionally ephemeral: the
-    // dispatch call recreates matching objects per submission in this MVP.
-    // Store them via deferred deletion through the pool instead.
     VkDescriptorSetLayout setLayout = VK_NULL_HANDLE;
     if (vkCreateDescriptorSetLayout(device_, &setLayoutInfo, nullptr,
                                     &setLayout) != VK_SUCCESS) {
@@ -331,68 +371,107 @@ void ComputeRunner::dispatch(
         throw std::runtime_error("descriptor set allocation failed");
     }
 
-    std::vector<VkWriteDescriptorSet> writes(bindings.size());
-    for (std::size_t i = 0; i < bindings.size(); ++i) {
-        writes[i] = {};
-        writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        writes[i].dstSet = descriptorSet;
-        writes[i].dstBinding = static_cast<std::uint32_t>(i);
-        writes[i].descriptorCount = 1U;
-        writes[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        writes[i].pBufferInfo = &bindings[i];
-    }
-    vkUpdateDescriptorSets(
-        device_, static_cast<std::uint32_t>(writes.size()), writes.data(), 0U,
-        nullptr);
-
     VkCommandBuffer command = VK_NULL_HANDLE;
-    const VkCommandBufferAllocateInfo commandInfo{
-        VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
-        nullptr,
-        commandPool_,
-        VK_COMMAND_BUFFER_LEVEL_PRIMARY,
-        1U,
+    const auto releaseCommand = [&]() noexcept {
+        if (command != VK_NULL_HANDLE) {
+            vkFreeCommandBuffers(device_, commandPool_, 1U, &command);
+            command = VK_NULL_HANDLE;
+        }
     };
-    if (vkAllocateCommandBuffers(device_, &commandInfo, &command) != VK_SUCCESS) {
-        throw std::runtime_error("command buffer allocation failed");
-    }
-
-    const VkCommandBufferBeginInfo beginInfo{
-        VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
-        nullptr,
-        VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
-        nullptr,
+    const auto resetDescriptors = [&]() {
+        if (vkResetDescriptorPool(device_, descriptorPool_, 0U) != VK_SUCCESS) {
+            throw std::runtime_error("vkResetDescriptorPool failed");
+        }
+        descriptorSet = VK_NULL_HANDLE;
     };
-    vkBeginCommandBuffer(command, &beginInfo);
 
-    vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
-    vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_COMPUTE,
-                            entry.pipelineLayout, 0U, 1U,
-                            &descriptorSet, 0U, nullptr);
-    if (pushConstantSize > 0U && pushConstants != nullptr) {
-        vkCmdPushConstants(command, entry.pipelineLayout,
-                           VK_SHADER_STAGE_COMPUTE_BIT, 0U, pushConstantSize,
-                           pushConstants);
-    }
-    vkCmdDispatch(command, groupCountX, 1U, 1U);
-    vkEndCommandBuffer(command);
+    try {
+        std::vector<VkWriteDescriptorSet> writes(bindings.size());
+        for (std::size_t i = 0; i < bindings.size(); ++i) {
+            writes[i] = {};
+            writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            writes[i].dstSet = descriptorSet;
+            writes[i].dstBinding = static_cast<std::uint32_t>(i);
+            writes[i].descriptorCount = 1U;
+            writes[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            writes[i].pBufferInfo = &bindings[i];
+        }
+        vkUpdateDescriptorSets(
+            device_, static_cast<std::uint32_t>(writes.size()), writes.data(),
+            0U, nullptr);
 
-    const VkSubmitInfo submitInfo{
-        VK_STRUCTURE_TYPE_SUBMIT_INFO,
-        nullptr,
-        0U,
-        nullptr,
-        nullptr,
-        1U,
-        &command,
-        0U,
-        nullptr,
-    };
-    if (vkQueueSubmit(queue_, 1U, &submitInfo, VK_NULL_HANDLE) != VK_SUCCESS) {
-        throw std::runtime_error("vkQueueSubmit failed");
+        const VkCommandBufferAllocateInfo commandInfo{
+            VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+            nullptr,
+            commandPool_,
+            VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+            1U,
+        };
+        if (vkAllocateCommandBuffers(device_, &commandInfo, &command) !=
+            VK_SUCCESS) {
+            throw std::runtime_error("command buffer allocation failed");
+        }
+
+        const VkCommandBufferBeginInfo beginInfo{
+            VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+            nullptr,
+            VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+            nullptr,
+        };
+        if (vkBeginCommandBuffer(command, &beginInfo) != VK_SUCCESS) {
+            throw std::runtime_error("vkBeginCommandBuffer failed");
+        }
+
+        vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
+        vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_COMPUTE,
+                                entry.pipelineLayout, 0U, 1U,
+                                &descriptorSet, 0U, nullptr);
+        if (pushConstantSize > 0U && pushConstants != nullptr) {
+            vkCmdPushConstants(command, entry.pipelineLayout,
+                               VK_SHADER_STAGE_COMPUTE_BIT, 0U,
+                               pushConstantSize, pushConstants);
+        }
+        vkCmdDispatch(command, groupCountX, 1U, 1U);
+        if (vkEndCommandBuffer(command) != VK_SUCCESS) {
+            throw std::runtime_error("vkEndCommandBuffer failed");
+        }
+
+        const VkSubmitInfo submitInfo{
+            VK_STRUCTURE_TYPE_SUBMIT_INFO,
+            nullptr,
+            0U,
+            nullptr,
+            nullptr,
+            1U,
+            &command,
+            0U,
+            nullptr,
+        };
+        if (vkQueueSubmit(queue_, 1U, &submitInfo, VK_NULL_HANDLE) !=
+            VK_SUCCESS) {
+            throw std::runtime_error("vkQueueSubmit failed");
+        }
+        if (vkQueueWaitIdle(queue_) != VK_SUCCESS) {
+            throw std::runtime_error("vkQueueWaitIdle failed");
+        }
+
+        // This runner is deliberately synchronous and owns the descriptor
+        // pool exclusively. Once the queue is idle and the command buffer is
+        // freed, resetting the whole pool is stronger than freeing one set:
+        // all descriptor storage is recycled without accumulating
+        // fragmentation across different kernel layouts.
+        releaseCommand();
+        resetDescriptors();
+    } catch (...) {
+        // If submission happened, wait for all possible descriptor use to
+        // finish before invalidating the pool. Device loss can make the wait
+        // fail again; release host-side command resources regardless.
+        (void)vkQueueWaitIdle(queue_);
+        releaseCommand();
+        (void)vkResetDescriptorPool(device_, descriptorPool_, 0U);
+        descriptorSet = VK_NULL_HANDLE;
+        throw;
     }
-    vkQueueWaitIdle(queue_);
-    vkFreeCommandBuffers(device_, commandPool_, 1U, &command);
 }
 
 }  // namespace latent::vulkan
