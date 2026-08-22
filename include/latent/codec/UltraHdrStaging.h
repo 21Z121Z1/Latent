@@ -18,7 +18,10 @@ struct PackedRendition {
     imaging::Primaries primaries = imaging::Primaries::SRGBRec709;
     imaging::TransferFunction transfer = imaging::TransferFunction::SRGB;
     std::uint32_t rowStridePixels = 0;
-    std::vector<std::uint8_t> bytes;
+    // libultrahdr documents both packed formats as 32-bit little-endian
+    // words. uint32_t storage also guarantees the alignment its implementation
+    // may require when reading the packed plane.
+    std::vector<std::uint32_t> pixels;
 };
 
 struct UltraHdrRenditionPair {
