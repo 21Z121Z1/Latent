@@ -1,7 +1,9 @@
 #include "latent/render/OutputEncoding.h"
 
+#include <algorithm>
 #include <cmath>
 #include <stdexcept>
+#include <string>
 
 namespace latent::render {
 namespace {
