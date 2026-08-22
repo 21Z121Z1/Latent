@@ -1,6 +1,7 @@
 #include "latent/codec/UltraHdrStaging.h"
 
 #include <algorithm>
+#include <bit>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -9,6 +10,13 @@
 
 namespace latent::codec {
 namespace {
+
+void validateHostEndian() {
+    if constexpr (std::endian::native != std::endian::little) {
+        throw std::runtime_error(
+            "libultrahdr packed RGBA staging currently requires a little-endian host");
+    }
+}
 
 void validatePayload(const imaging::RenderedFrame& frame) {
     if (frame.reference != imaging::ReferenceDomain::Display ||
@@ -80,13 +88,6 @@ std::uint32_t quantizeUnorm(float value, std::uint32_t maximum) {
         std::clamp(rounded, 0.0, static_cast<double>(maximum)));
 }
 
-void appendLittleEndian32(std::vector<std::uint8_t>& bytes, std::uint32_t value) {
-    bytes.push_back(static_cast<std::uint8_t>(value & 0xffU));
-    bytes.push_back(static_cast<std::uint8_t>((value >> 8U) & 0xffU));
-    bytes.push_back(static_cast<std::uint8_t>((value >> 16U) & 0xffU));
-    bytes.push_back(static_cast<std::uint8_t>((value >> 24U) & 0xffU));
-}
-
 PackedRendition packSdr(const imaging::RenderedFrame& sdr) {
     PackedRendition packed{};
     packed.extent = sdr.image.extent;
@@ -97,17 +98,17 @@ PackedRendition packSdr(const imaging::RenderedFrame& sdr) {
 
     const std::uint64_t pixelCount64 = sdr.image.extent.pixelCount();
     if (pixelCount64 >
-        static_cast<std::uint64_t>(std::numeric_limits<std::size_t>::max() / 4U)) {
+        static_cast<std::uint64_t>(std::numeric_limits<std::size_t>::max())) {
         throw std::invalid_argument("SDR rendition is too large to pack");
     }
-    packed.bytes.reserve(static_cast<std::size_t>(pixelCount64) * 4U);
+    packed.pixels.reserve(static_cast<std::size_t>(pixelCount64));
 
     for (std::size_t base = 0U; base < sdr.image.rgb.size(); base += 3U) {
         const std::uint32_t r = quantizeUnorm(sdr.image.rgb[base], 255U);
         const std::uint32_t g = quantizeUnorm(sdr.image.rgb[base + 1U], 255U);
         const std::uint32_t b = quantizeUnorm(sdr.image.rgb[base + 2U], 255U);
-        const std::uint32_t rgba = r | (g << 8U) | (b << 16U) | (255U << 24U);
-        appendLittleEndian32(packed.bytes, rgba);
+        packed.pixels.push_back(
+            r | (g << 8U) | (b << 16U) | (255U << 24U));
     }
     return packed;
 }
@@ -122,18 +123,17 @@ PackedRendition packHdr(const imaging::RenderedFrame& hdr) {
 
     const std::uint64_t pixelCount64 = hdr.image.extent.pixelCount();
     if (pixelCount64 >
-        static_cast<std::uint64_t>(std::numeric_limits<std::size_t>::max() / 4U)) {
+        static_cast<std::uint64_t>(std::numeric_limits<std::size_t>::max())) {
         throw std::invalid_argument("HDR rendition is too large to pack");
     }
-    packed.bytes.reserve(static_cast<std::size_t>(pixelCount64) * 4U);
+    packed.pixels.reserve(static_cast<std::size_t>(pixelCount64));
 
     for (std::size_t base = 0U; base < hdr.image.rgb.size(); base += 3U) {
         const std::uint32_t r = quantizeUnorm(hdr.image.rgb[base], 1023U);
         const std::uint32_t g = quantizeUnorm(hdr.image.rgb[base + 1U], 1023U);
         const std::uint32_t b = quantizeUnorm(hdr.image.rgb[base + 2U], 1023U);
-        const std::uint32_t rgba =
-            r | (g << 10U) | (b << 20U) | (3U << 30U);
-        appendLittleEndian32(packed.bytes, rgba);
+        packed.pixels.push_back(
+            r | (g << 10U) | (b << 20U) | (3U << 30U));
     }
     return packed;
 }
@@ -143,6 +143,7 @@ PackedRendition packHdr(const imaging::RenderedFrame& hdr) {
 UltraHdrRenditionPair stageUltraHdrRenditions(
     const imaging::RenderedFrame& sdr,
     const imaging::RenderedFrame& hdr) {
+    validateHostEndian();
     validateSdr(sdr);
     validateHdr(hdr);
 
