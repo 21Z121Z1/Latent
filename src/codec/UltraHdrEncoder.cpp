@@ -163,6 +163,21 @@ uhdr_raw_image_t makeHdrDescriptor(const PackedRendition& hdr) {
     return image;
 }
 
+uhdr_compressed_image_t makeCompressedDescriptor(
+    const EncodedUltraHdr& encoded) {
+    if (encoded.bytes.empty()) {
+        throw std::invalid_argument("cannot probe an empty Ultra HDR stream");
+    }
+    uhdr_compressed_image_t image{};
+    image.data = const_cast<std::uint8_t*>(encoded.bytes.data());
+    image.data_sz = encoded.bytes.size();
+    image.capacity = encoded.bytes.size();
+    image.cg = UHDR_CG_UNSPECIFIED;
+    image.ct = UHDR_CT_UNSPECIFIED;
+    image.range = UHDR_CR_UNSPECIFIED;
+    return image;
+}
+
 }  // namespace
 
 EncodedUltraHdr encodeUltraHdr(
@@ -222,6 +237,37 @@ EncodedUltraHdr encodeUltraHdr(
     EncodedUltraHdr result{};
     result.container = options.container;
     result.bytes.assign(begin, begin + stream->data_sz);
+    return result;
+}
+
+UltraHdrProbe probeUltraHdr(const EncodedUltraHdr& encoded) {
+    uhdr_compressed_image_t image = makeCompressedDescriptor(encoded);
+
+    using Decoder = std::unique_ptr<uhdr_codec_private_t, void (*)(uhdr_codec_private_t*)>;
+    Decoder decoder(uhdr_create_decoder(), &uhdr_release_decoder);
+    if (!decoder) {
+        throw std::runtime_error("libultrahdr failed to create decoder probe");
+    }
+
+    requireOk(
+        uhdr_dec_set_image(decoder.get(), &image),
+        "libultrahdr rejected encoded stream for probing");
+    requireOk(uhdr_dec_probe(decoder.get()), "libultrahdr probe failed");
+
+    UltraHdrProbe result{};
+    result.imageWidth = uhdr_dec_get_image_width(decoder.get());
+    result.imageHeight = uhdr_dec_get_image_height(decoder.get());
+    result.gainMapWidth = uhdr_dec_get_gainmap_width(decoder.get());
+    result.gainMapHeight = uhdr_dec_get_gainmap_height(decoder.get());
+    result.hasGainMapMetadata =
+        uhdr_dec_get_gainmap_metadata(decoder.get()) != nullptr;
+
+    if (result.imageWidth <= 0 || result.imageHeight <= 0 ||
+        result.gainMapWidth <= 0 || result.gainMapHeight <= 0 ||
+        !result.hasGainMapMetadata) {
+        throw std::runtime_error(
+            "libultrahdr probe did not find a complete base-image/gain-map container");
+    }
     return result;
 }
 
