@@ -35,7 +35,7 @@ if(LATENT_ENABLE_VULKAN_RUNTIME)
     # Build-time SPIR-V compilation. ENABLE_OPT=OFF drops the SPIRV-Tools
     # dependency; our per-target warning flags never reach glslang sources.
     set(ENABLE_OPT OFF CACHE BOOL "" FORCE)
-    set(ENABLE_HLSLANG OFF CACHE BOOL "" FORCE)
+    set(ENABLE_HLSL OFF CACHE BOOL "" FORCE)
     set(ENABLE_GLSLANG_BINARIES ON CACHE BOOL "" FORCE)
     set(SKIP_GLSLANG_INSTALL ON CACHE BOOL "" FORCE)
     FetchContent_Declare(glslang
@@ -146,16 +146,23 @@ set(LATENT_CODEC_SOURCES
 )
 
 if(LATENT_ENABLE_ULTRAHDR)
+    set(_LATENT_ULTRAHDR_INCLUDE_HINTS)
+    set(_LATENT_ULTRAHDR_LIBRARY_HINTS)
+    if(LATENT_ULTRAHDR_ROOT)
+        list(APPEND _LATENT_ULTRAHDR_INCLUDE_HINTS
+            "${LATENT_ULTRAHDR_ROOT}/include")
+        list(APPEND _LATENT_ULTRAHDR_LIBRARY_HINTS
+            "${LATENT_ULTRAHDR_ROOT}/lib"
+            "${LATENT_ULTRAHDR_ROOT}/lib64")
+    endif()
+
     find_path(LATENT_ULTRAHDR_INCLUDE_DIR
         NAMES ultrahdr_api.h
-        HINTS
-            "${LATENT_ULTRAHDR_ROOT}/include"
+        HINTS ${_LATENT_ULTRAHDR_INCLUDE_HINTS}
     )
     find_library(LATENT_ULTRAHDR_LIBRARY
         NAMES uhdr
-        HINTS
-            "${LATENT_ULTRAHDR_ROOT}/lib"
-            "${LATENT_ULTRAHDR_ROOT}/lib64"
+        HINTS ${_LATENT_ULTRAHDR_LIBRARY_HINTS}
     )
     if(NOT LATENT_ULTRAHDR_INCLUDE_DIR OR NOT LATENT_ULTRAHDR_LIBRARY)
         message(FATAL_ERROR
