@@ -6,7 +6,7 @@ This document is the plan of record for **what exists, what is stacked but not m
 
 ## 1. Branch topology
 
-The repository currently has six branches. They are not six competing architectures.
+The repository currently has seven branches. They are not seven competing architectures.
 
 | Branch | Relationship to current `main` | Meaning |
 | --- | --- | --- |
@@ -14,10 +14,13 @@ The repository currently has six branches. They are not six competing architectu
 | `feat/scene-analysis-output-primitives` | fully behind `main` | Historical PR #8 implementation branch; already absorbed. |
 | `feat/vulkan-demosaic-color-kernel` | fully behind `main` | Historical PR #6 implementation branch; already absorbed. |
 | `fix/compute-runner-lifetime` | fully behind `main` | Historical PR #7 fix branch; already absorbed. |
-| `feat/reference-sdr-hdr-renderer` | 8 commits ahead of `main` | Open PR #9. Adds independent SDR/HDR reference rendering. |
-| `feat/ultrahdr-codec-staging` | 19 commits ahead of the renderer branch | Open PR #10, deliberately stacked on #9. Adds explicit rendition staging and optional libultrahdr integration. This is the newest complete implementation view. |
+| `feat/reference-sdr-hdr-renderer` | ahead of `main` | Open PR #9. Adds independent SDR/HDR reference rendering. |
+| `feat/ultrahdr-codec-staging` | stacked on the renderer branch | Open PR #10, deliberately stacked on #9. Adds explicit rendition staging and optional libultrahdr integration. This is the newest complete implementation view. |
+| `docs/agent-first-system-architecture` | stacked on the Ultra HDR branch | Open PR #11. Documentation/control-plane reframe only; no imaging/build code changes. |
 
-The documentation/control-plane work should be reviewed on top of `feat/ultrahdr-codec-staging`, because that branch contains the current superset of implemented semantics. Once #9 and #10 land, the docs can follow the stack into `main` without changing architectural meaning.
+The documentation/control-plane work is intentionally reviewed on top of `feat/ultrahdr-codec-staging`, because that branch contains the current superset of implemented semantics. Once #9 and #10 land, the docs can follow the stack into `main` without changing architectural meaning.
+
+Branch commit counts are deliberately not part of this table: they are delivery state and change on every update. Use GitHub comparison/PR metadata when exact counts matter.
 
 ## 2. Maturity vocabulary
 
@@ -74,12 +77,16 @@ Deliverables:
    - external codec/export nodes;
    - remove or redefine the legacy `GainMapEncode` implication so gain-map math remains at the codec boundary.
 3. Introduce canonical semantic type constructors/descriptors to reduce duplicated primaries/white/transfer/reference/range state.
-4. Define a first-class `ExecutionPlan` with stable operation/resource IDs, selected lowerings, precision/storage decisions, lifetimes, barriers, and capability reasons.
-5. Replace the idea of one monolithic `ImagingBackend` with thin request APIs over graph compilation + executors.
-6. Define `ExecutionTrace` before introducing complex asynchronous/multi-frame behavior.
-7. Add tests for graph schemas, illegal states, compiler determinism, fallback reasons, and plan serialization/debug rendering as appropriate.
+4. Define typed semantic identities and multi-source lineage so future burst provenance does not overload `sourceRawId`.
+5. Separate semantic values from physical resource bindings; host vectors and Vulkan/AHardwareBuffer resources are realizations, not image meaning.
+6. Define a first-class `ExecutionPlan` with stable operation/resource IDs, selected lowerings, precision/storage decisions, lifetimes, barriers, and capability reasons.
+7. Replace the idea of one monolithic `ImagingBackend` with thin request APIs over graph compilation + executors.
+8. Define `ExecutionTrace` before introducing complex asynchronous/multi-frame behavior.
+9. Add tests for graph schemas, illegal states, compiler determinism, lineage, resource binding, fallback reasons, and plan/trace debug representations as appropriate.
 
-Completion criterion: a new semantic operation has one obvious route from contract -> reference -> compiler -> lowering -> evidence.
+Detailed sequencing and acceptance criteria live in `docs/plans/0001-semantic-control-plane.md`.
+
+Completion criterion: a new semantic operation has one obvious route from contract -> reference -> compiler -> lowering -> evidence, with semantic lineage and physical execution separately inspectable.
 
 ### P1 — Android capture contracts and recorded fixtures
 
@@ -168,7 +175,7 @@ Current recommended order:
 
 1. Review/merge PR #9 (`feat/reference-sdr-hdr-renderer`) into `main`.
 2. Rebase/update PR #10 onto the new `main` only after #9 merges, preserving the explicit codec boundary.
-3. Carry the agent/system-architecture documentation commit on top of the latest semantic superset, then retarget it as the stack collapses.
+3. Carry PR #11 documentation on top of the latest semantic superset, then retarget it as the stack collapses.
 4. Do not begin a competing long-lived feature branch from an older historical branch.
 
 This is repository hygiene, not architecture. The semantic design should remain invariant under branch-stack cleanup.
@@ -179,6 +186,7 @@ Create or supersede an ADR before making any change that alters one of these:
 
 - reference-domain ownership or a domain transition;
 - the definition of `SceneFrame`;
+- semantic identity/lineage or physical-resource ownership;
 - precision/error-budget policy;
 - which layer owns tone/gamut/gain-map behavior;
 - reference-vs-production authority;
