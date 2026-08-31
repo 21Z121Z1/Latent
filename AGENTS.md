@@ -2,7 +2,7 @@
 
 Latent is not a collection of camera filters. Treat it as a **typed semantic imaging system whose implementations are compiled/lowered into execution backends and proven against executable reference semantics**.
 
-This file is the fastest operational entry point for an agent. Keep it concise. Deeper design belongs in `docs/architecture.md`; live status and branch topology belong in `docs/roadmap.md`; validation belongs in `docs/verification.md`; durable architectural decisions belong in `docs/decisions/`.
+This file is the fastest operational entry point for an agent. Keep it concise. Deeper design belongs in `docs/architecture.md`; live status and branch topology belong in `docs/roadmap.md`; validation belongs in `docs/verification.md`; durable architectural decisions belong in `docs/decisions/`; multi-step implementation state belongs in `docs/plans/`.
 
 ## 30-second orientation
 
@@ -42,7 +42,7 @@ semantic contracts
       -> evidence (goldens, differential tests, integration tests, trace)
 ```
 
-Only the first, parts of the second, and the current reference/Vulkan execution slices are implemented today. `GraphCompiler`, a first-class `ExecutionPlan`, `RawBurst`, and structured execution traces are target architecture, not existing APIs.
+Only the first, parts of the second, and the current reference/Vulkan execution slices are implemented today. `GraphCompiler`, a first-class `ExecutionPlan`, `RawBurst`, typed multi-source lineage, and structured execution traces are target architecture, not existing APIs.
 
 ## Authority and truth hierarchy
 
@@ -52,7 +52,8 @@ When trying to understand what is true, use this order:
 2. **`docs/architecture.md`** is the intended system boundary and explains how current pieces fit together.
 3. **`docs/roadmap.md`** says what is merged, stacked, transitional, or planned.
 4. **Accepted ADRs in `docs/decisions/`** preserve decisions that must survive PR history.
-5. PR descriptions and old branches are historical evidence, not architectural authority.
+5. **Active plans in `docs/plans/`** preserve multi-step implementation state and acceptance criteria.
+6. PR descriptions and old branches are historical evidence, not architectural authority.
 
 If code/tests and architecture disagree, do not silently choose one. Determine whether the implementation or the design is stale and make the discrepancy explicit in the change.
 
@@ -65,7 +66,7 @@ Start from the semantic transition involved in the task, then read outward.
 | Sensor/capture semantics | `include/latent/imaging/RawFrame.h`, `include/latent/imaging/Types.h` | `reference/`, ingress tests, capture roadmap |
 | RAW reconstruction | `include/latent/reference/ReferenceReconstruct.h` | `DngColor`, `Demosaic`, `SensorLinearOps`, noise tests |
 | Scene semantics | `include/latent/imaging/SceneFrame.h` | `Types.h`, reference reconstruction, scene-analysis tests |
-| Graph/compiler work | `include/latent/graph/ImagingIR.h`, `src/graph/ImagingIR.cpp` | architecture control-plane section, ADRs |
+| Graph/compiler work | `include/latent/graph/ImagingIR.h`, `src/graph/ImagingIR.cpp` | architecture control-plane section, ADRs, active plan |
 | Vulkan execution | `include/latent/vulkan/DeviceCaps.h`, `ComputeRunner.h`, kernel wrappers | shaders, differential tests, `docs/verification.md` |
 | Rendering | `RenderedFrame.h`, `render/SceneAnalysis.h`, `render/ReferenceRenderer.h` | output encoding, render tests |
 | Codec/export | `codec/UltraHdrStaging.h`, `codec/UltraHdrEncoder.h` | codec tests, external dependency boundary |
@@ -86,6 +87,7 @@ Do not scan every source file by default. The contracts above are the high-infor
 - Successful AHardwareBuffer import is not proof of zero-copy. Distinguish allocation sharing, import success, and measured memory traffic.
 - Codec standards behavior is a leaf integration concern. Gain-map math/container semantics stay in standards-oriented codec libraries unless an ADR explicitly changes that boundary.
 - Third-party dependencies must not contaminate the deterministic reference core with incompatible compiler/FP policy.
+- Semantic identity/lineage and physical storage are separate concerns. Platform handles and allocator choices must never become the definition of a `RawFrame`, `SceneFrame`, or rendition.
 
 ## Current transitional structures: do not mistake them for the final architecture
 
@@ -96,6 +98,8 @@ Several APIs are intentionally incomplete seeds:
 - `ImagingBackend` currently exposes only `reconstructSingleRaw()`. Treat it as a transitional adapter, not the future universal backend interface.
 - `ComputeRunner` is a deliberately synchronous one-queue correctness harness. It is not the final frame-graph scheduler, allocator, or multi-frame executor.
 - `SceneFrame`, `RenderedFrame`, and `ImageType` currently repeat some semantic fields. Avoid adding new duplicated semantic state; the roadmap calls for a tighter single-source-of-truth model.
+- `RawFrame`, `SceneFrame`, and `RenderedFrame` currently own CPU vectors because they are convenient host/reference values. Do **not** evolve them by embedding Vulkan/AHardwareBuffer handles. Target execution binds semantic values to backend resources in an `ExecutionPlan`.
+- `sourceRawId` is a single-source lineage convenience. Do **not** overload it to represent a burst or multi-stage provenance graph. Future multi-frame work needs typed identities and explicit lineage/source sets.
 
 ## Change protocol
 
@@ -107,9 +111,9 @@ For any non-trivial change:
 4. Keep policy separate from mechanism: capture/reconstruction/render/codec intent must not leak into unrelated layers.
 5. Add the narrowest regression or golden test that fails for the old behavior and proves the new contract.
 6. For Vulkan/optimized implementations, add or extend differential evidence rather than replacing semantic tests with device-specific expectations.
-7. Update `docs/roadmap.md` when maturity/status changes. Add or supersede an ADR when changing a durable boundary, invariant, precision rule, dependency rule, or ownership rule.
+7. Update `docs/roadmap.md` when maturity/status changes. Add or supersede an ADR when changing a durable boundary, invariant, precision rule, dependency rule, or ownership rule. For work spanning multiple architectural steps or PRs, create/update a plan in `docs/plans/` with acceptance criteria and current state.
 8. Run the relevant validation ladder from `docs/verification.md`; inspect failures rather than weakening gates.
-9. Re-read the final diff for semantic drift, duplicate truth, hidden clipping, accidental backend coupling, and claims not supported by tests.
+9. Re-read the final diff for semantic drift, duplicate truth, hidden clipping, accidental backend coupling, broken lineage, physical-resource leakage, and claims not supported by tests.
 
 ## Design preference for future APIs
 
@@ -119,6 +123,8 @@ Prefer structures that reduce the number of facts an agent must hold simultaneou
 - canonical constructors/schema registries over free-form combinations;
 - immutable semantic values with explicit transitions over mutation across domains;
 - generated/derived execution traits over duplicated caller annotations;
+- typed identities and explicit lineage over reused scalar IDs;
+- semantic descriptors separated from physical resource bindings;
 - stable IDs and machine-readable diagnostics over prose-only logs;
 - one canonical status/decision source with links, not copied descriptions;
 - plans/traces that explain *why* a lowering was selected, not only what ran.

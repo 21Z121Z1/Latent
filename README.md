@@ -67,6 +67,7 @@ Important boundaries remain deliberate: AHardwareBuffer import execution is not 
 - `docs/roadmap.md` — branch topology, maturity matrix, and plan of record.
 - `docs/verification.md` — validation/evidence matrix and commands.
 - `docs/decisions/` — durable architectural decisions.
+- `docs/plans/` — persistent multi-step implementation plans and acceptance criteria.
 - `AGENTS.md` — compact operating contract for coding agents.
 
 ## Build and test
@@ -105,6 +106,6 @@ ctest --test-dir build-uhdr --output-on-failure --verbose
 
 ## How to read the project
 
-For implementation work, start with `AGENTS.md`, then read only the relevant semantic contract and its tests. For system design, read `docs/architecture.md`. For what is merged/stacked/planned and what should be built next, read `docs/roadmap.md`. For evidence requirements, use `docs/verification.md`.
+For implementation work, start with `AGENTS.md`, then read only the relevant semantic contract and its tests. For system design, read `docs/architecture.md`. For what is merged/stacked/planned and what should be built next, read `docs/roadmap.md`. For evidence requirements, use `docs/verification.md`. For multi-PR implementation work, keep the persistent execution state in `docs/plans/`.
 
 Apache-2.0. See [`LICENSE`](LICENSE) and [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
