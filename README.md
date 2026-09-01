@@ -2,7 +2,7 @@
 
 Latent is an experimental scene-referred computational-photography core for Android. Its architectural center is not Vulkan or a sequence of filters: it is a **typed semantic imaging model** backed by deterministic reference semantics, a backend-independent graph/compiler direction, production Vulkan lowerings, and differential verification.
 
-APIs are still evolving. The current implementation already covers a substantial single-RAW path and the first output/codec slices; Android capture, burst reconstruction, a complete graph compiler/execution plan, and production Vulkan rendering are still in progress or planned.
+APIs are still evolving. The merged implementation already covers a substantial single-RAW path plus independent SDR/HDR reference rendering and the first output/codec integration. Android capture, burst reconstruction, a complete graph compiler/execution plan, and production Vulkan rendering remain planned or incomplete.
 
 ## System at a glance
 
@@ -29,17 +29,31 @@ SceneFrame                       scene-referred, linear AP1/D60,
 The same semantic work can have multiple realizations:
 
 ```text
-semantic contract -> reference FP32 implementation -> graph/lowering -> Vulkan or external backend
-                                                     |
-                                                     v
-                                      golden / differential / integration evidence
+semantic contract -> reference FP32 implementation -> graph/compiler -> execution plan
+                                                                |
+                                                    +-----------+-----------+
+                                                    v                       v
+                                               reference               Vulkan/external
+                                                    \                       /
+                                                     +---- evidence/trace --+
 ```
 
-The rule is simple: **semantics define what an image means; backends are only ways to realize those semantics.**
+The control plane also separates four kinds of input that must not masquerade as one another:
+
+```text
+semantic rules    observations/evidence    image intent/policy    execution capabilities
+       \                 |                       |                       /
+        +----------------+--------> compiler <---+----------------------+
+                                      |
+                                      v
+                                ExecutionPlan
+```
+
+The rule is: **semantics define what an image means; observations say what was learned; intent says what is wanted or delegated; capabilities say what can run; backends only realize an explicit plan.**
 
 ## Current capability
 
-The latest stacked implementation contains:
+The merged implementation includes:
 
 - explicit sensor / scene / display reference-domain types and validation;
 - `RawFrame`, `SceneFrame`, and `RenderedFrame` contracts with provenance/confidence-aware metadata;
@@ -52,7 +66,9 @@ The latest stacked implementation contains:
 - scene analysis and independent deterministic SDR/HDR reference rendering;
 - explicit SDR/HDR rendition staging plus optional external libultrahdr integration, with real JPEG Ultra HDR encode/probe coverage in CI.
 
-Important boundaries remain deliberate: AHardwareBuffer import execution is not yet an Android-device implementation; `ComputeRunner` is still a synchronous correctness harness; rendering has no production Vulkan lowering yet; HEIF/AVIF routing is not yet device/integration validated; burst reconstruction is not implemented.
+Important boundaries remain deliberate: AHardwareBuffer import execution is not yet an Android-device implementation; `ComputeRunner` is still a synchronous correctness harness; rendering has no production Vulkan lowering yet; HEIF/AVIF routing is not yet fully integration/device validated; burst reconstruction is not implemented; the complete graph compiler, authority-separated contexts, `ExecutionPlan`, and `ExecutionTrace` are target architecture rather than current APIs.
+
+For the exact current PR/head/review/CI state, query GitHub. README intentionally does not mirror volatile delivery snapshots.
 
 ## Repository map
 
@@ -63,12 +79,12 @@ Important boundaries remain deliberate: AHardwareBuffer import execution is not 
 - `include/latent/render/`, `src/render/` — scene analysis, output encoding, and reference rendering.
 - `include/latent/codec/`, `src/codec/` — explicit output-rendition staging and optional codec adapters.
 - `tests/` — semantic, golden, differential, lifetime, render, and codec evidence.
-- `docs/architecture.md` — authoritative system model and invariants.
-- `docs/roadmap.md` — branch topology, maturity matrix, and plan of record.
+- `docs/architecture.md` — stable system model and invariants.
+- `docs/roadmap.md` — capability maturity, dependencies, and sequencing.
 - `docs/verification.md` — validation/evidence matrix and commands.
-- `docs/decisions/` — durable architectural decisions.
+- `docs/decisions/` — durable architectural decisions and supersession history.
 - `docs/plans/` — persistent multi-step implementation plans and acceptance criteria.
-- `AGENTS.md` — compact operating contract for coding agents.
+- `AGENTS.md` — compact operating/router contract for coding agents.
 
 ## Build and test
 
@@ -106,6 +122,6 @@ ctest --test-dir build-uhdr --output-on-failure --verbose
 
 ## How to read the project
 
-For implementation work, start with `AGENTS.md`, then read only the relevant semantic contract and its tests. For system design, read `docs/architecture.md`. For what is merged/stacked/planned and what should be built next, read `docs/roadmap.md`. For evidence requirements, use `docs/verification.md`. For multi-PR implementation work, keep the persistent execution state in `docs/plans/`.
+For implementation work, start with `AGENTS.md`, then read only the relevant semantic contract and its tests. For stable system design, read `docs/architecture.md` and applicable ADRs. For capability maturity and what should be built next, read `docs/roadmap.md`. For an active multi-step implementation, use `docs/plans/`. For evidence requirements, use `docs/verification.md`. For live delivery state, query GitHub directly.
 
-Apache-2.0. See [`LICENSE`](LICENSE) and [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
+Apache-2.0. See [`LICENSE`](LICENSE) and [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md`).
