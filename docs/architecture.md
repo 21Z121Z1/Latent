@@ -205,6 +205,16 @@ It must not invent creative image-policy decisions absent from the request or it
 
 `ComputeRunner` is currently a deliberately synchronous one-queue harness with host-visible buffers and one-pipeline dispatches. It is a correctness seed, not the final scheduler, allocator, or multi-frame executor.
 
+### 4.7 Derived system introspection is a projection, not another authority
+
+ADR-0004 adds a machine-readable introspection surface because agents should not have to scan enums, headers, CMake, wrappers, and tests to discover the implemented system. The target `SystemCatalog` (name provisional) is derived from the same canonical semantic/operation/lowering/diagnostic registries and build-feature facts that compilation uses.
+
+It must remain separate from runtime `DeviceCaps`, observation/profile evidence, request/policy, roadmap maturity, and live GitHub delivery state. A combined inspection tool may display those views together, but it may not merge their authority.
+
+The introspection/control artifacts also need explicit format/schema versions, deterministic canonical representations, and content fingerprints. Scoped identities such as semantic value/run/resource IDs are not content hashes. Compiler/validation diagnostics should become structured records with stable codes/fields; human-readable messages remain views rather than machine control data.
+
+The key invariant is: **the catalog is generated from implementation truth; implementation truth is never reconstructed from a hand-edited catalog.**
+
 ## 5. Evidence plane: correctness and explainability are architecture
 
 Every significant semantic operation should have an evidence chain:
@@ -235,6 +245,7 @@ A structured `ExecutionTrace` should make diagnosis a data problem rather than r
 - which observations/candidates/fallbacks were used and with what provenance/confidence;
 - fixed intent and any policy choices delegated/made;
 - compiler/profile/capability fingerprints;
+- catalog/semantic-schema/compiler format identity needed to interpret the trace;
 - which lowering ran each operation and why;
 - which physical resource bound each plan resource;
 - precision/storage decisions;
@@ -424,6 +435,12 @@ Android NDK capture contracts, recorded metadata fixtures, `RawBurst`, alignment
 
 **Direction:** add them through new semantic/observation objects and temporal operations, not by expanding `RawFrame` or the Vulkan runner ad hoc.
 
+### 9.9 Static system introspection and artifact compatibility are under-modeled
+
+Today an agent must reconstruct implemented operations, reference paths, lowerings, optional build integrations, and many fallback reasons from several code/document surfaces. Some validation/decision APIs expose only free-form strings. There is no canonical build-wide catalog or explicit persisted-artifact compatibility model yet.
+
+**Direction:** implement ADR-0004/Plan 0002 after canonical operation registries begin to land: derive `SystemCatalog`, structured diagnostics, canonical serialization, explicit versions, and fingerprints from authoritative registries rather than checking in another manifest.
+
 ## 10. Target control plane
 
 Conceptually:
@@ -475,7 +492,9 @@ CapabilityContext ----------> GraphCompiler
 
 The compiler should be deterministic for the same semantic graph/request + observation/profile versions + policy + capabilities. If tuned/heuristic choices are introduced, the chosen parameters, delegation, evidence/profile version, and reason must be recorded.
 
-The target is not “one giant object containing everything.” The target is one explicit compilation boundary whose inputs retain their authority and whose output explains every realization decision.
+The canonical registries used by graph construction/compilation also derive the static `SystemCatalog`; the compiler does not read a separately maintained catalog. Plans/traces should carry enough schema/catalog/compiler version or fingerprint context to make their interpretation explicit across builds.
+
+The target is not “one giant object containing everything.” The target is one explicit compilation boundary whose inputs retain their authority and whose output explains every realization decision, plus one cheap derived introspection view that lets an agent discover what the implementation contains.
 
 ## 11. Extension rules
 
@@ -492,6 +511,7 @@ A new feature belongs in Latent only after answering:
 9. What lineage/resource implications exist?
 10. Does it require a durable ADR?
 11. Can an agent discover the answers from canonical sources without reconstructing them from PR history or hidden control flow?
+12. Once the introspection surface exists, will the feature appear automatically through canonical registrations, diagnostics, and evidence linkage rather than a manual manifest update?
 
 If these answers are unclear, the feature is not ready to become another execution path.
 
@@ -506,8 +526,10 @@ Route knowledge by volatility:
 - `docs/roadmap.md` owns **capability maturity, dependencies, and sequencing**, not exact live branch state;
 - `docs/plans/` owns **active multi-step implementation state and acceptance criteria**;
 - `docs/verification.md` owns **evidence requirements and reproducible validation commands**;
+- canonical implementation registries own **implemented semantic/operation/lowering truth**; the future `SystemCatalog` is their generated machine-readable projection, not a separate authority;
+- runtime capability queries own **live device/platform facts**;
 - GitHub owns **volatile delivery facts**: current branches, PR open/merged state, head SHAs, review threads, workflow/check results;
 - `README.md` is a concise project entry point;
 - `AGENTS.md` is the low-context operating/router contract and links rather than reproduces deep design.
 
-Do not reconstruct architecture from a chain of PR descriptions. Do not reconstruct live delivery state from a dated architecture/roadmap snapshot. Query the authority appropriate to the question.
+Do not reconstruct architecture from a chain of PR descriptions. Do not reconstruct live delivery state from a dated architecture/roadmap snapshot. Do not reconstruct implementation truth from a hand-edited catalog. Query or derive the authority appropriate to the question.
