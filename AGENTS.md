@@ -31,7 +31,7 @@ semantic request + observations + delegated policy + capabilities
     -> outputs + evidence / ExecutionTrace
 ```
 
-`GraphCompiler`, first-class `ExecutionPlan`, typed multi-source lineage, authority-separated compiler contexts, `RawBurst`, and structured `ExecutionTrace` are target architecture, not current APIs.
+`GraphCompiler`, first-class `ExecutionPlan`, typed multi-source lineage, authority-separated compiler contexts, `RawBurst`, structured `ExecutionTrace`, and the ADR-0004 derived `SystemCatalog` introspection surface are target architecture, not current APIs.
 
 ## Route questions to their authority
 
@@ -42,6 +42,7 @@ semantic request + observations + delegated policy + capabilities
 | Why was that boundary chosen? | `docs/decisions/` |
 | What is transitional / what comes next? | `docs/roadmap.md` |
 | What is the current multi-PR migration state? | `docs/plans/` |
+| What implemented operations/lowerings does this build expose? | today: canonical code/build/tests; target: derived `SystemCatalog` per ADR-0004/Plan 0002 |
 | What is live on GitHub now? | GitHub query, never a dated doc snapshot |
 | What evidence is required? | `docs/verification.md` + relevant tests/workflow |
 
@@ -87,6 +88,7 @@ Do not scan the repository by default; semantic contracts and their tests are th
 - Ultra HDR gain-map/container behavior stays at the codec boundary unless an ADR changes ownership.
 - Semantic identity/lineage is separate from physical storage; do not embed backend handles into semantic frame meaning or overload `sourceRawId` for multi-source provenance.
 - Do not grow mixed-purpose configuration bags; target APIs separate semantic request, observations, delegated policy, and capabilities.
+- Derived machine-readable introspection must project canonical registries/build facts; never maintain a second hand-edited manifest of implemented semantics.
 
 ## Change protocol
 
@@ -98,9 +100,10 @@ For non-trivial work:
 4. Keep policy, observations, semantic meaning, and backend mechanism separate.
 5. Add the narrowest regression/golden/property/differential/integration evidence appropriate to the change.
 6. Update roadmap only for maturity/sequencing; update/create an ADR only for durable boundaries; update a plan for multi-step migration state.
-7. Query latest GitHub state and validate the latest SHA using `docs/verification.md`.
-8. Re-read the final diff for duplicate truth, hidden clipping, semantic drift, backend leakage, broken lineage, cross-authority substitution, and unsupported claims.
+7. Start new work from current `main` unless an Active plan explicitly documents an intentional stacked base; fully merged historical branches are not new-work bases.
+8. Query latest GitHub state and validate the latest SHA using `docs/verification.md`; merge only the reviewed latest head after applicable checks succeed.
+9. Re-read the final diff for duplicate truth, hidden clipping, semantic drift, backend leakage, broken lineage, cross-authority substitution, and unsupported claims.
 
-Prefer canonical schemas/constructors, typed identities, explicit lineage, immutable semantic transitions, backend-neutral resources, structured diagnostic codes, stable IDs/fingerprints, and machine-readable plans/traces over free-form duplicated state.
+Prefer canonical schemas/constructors, typed identities, explicit lineage, immutable semantic transitions, backend-neutral resources, structured diagnostic codes, stable IDs/fingerprints, derived machine-readable introspection, and machine-readable plans/traces over free-form duplicated state.
 
 **North star:** semantics say what the image means; observations say what was learned; intent says what is wanted/delegated; capabilities say what can run; the compiler makes an explicit plan; executors perform it; evidence proves the requested meaning was preserved.
