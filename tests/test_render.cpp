@@ -1,12 +1,15 @@
 #include "latent/render/AcesToneScale.h"
 #include "latent/render/OutputEncoding.h"
+#include "latent/render/ReferenceRenderer.h"
 #include "latent/render/SceneAnalysis.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <exception>
 #include <functional>
 #include <iostream>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -197,6 +200,157 @@ void testAcesToneScalePrimitive() {
         "ACES scalar tonescale must reject negative luminance input");
 }
 
+void testIndependentReferenceRenderBranches() {
+    using namespace latent::render;
+
+    auto scene = makeNeutralScene({0.18F, 1.0F, 8.0F}, 0.0F);
+    scene.sourceRawId = 42U;
+
+    const auto sdr = renderReference(scene, makeSdrRenderConfig());
+    const auto hdr = renderReference(scene, makeHdrPqRenderConfig());
+
+    check(sdr.sourceRawId == 42U && hdr.sourceRawId == 42U,
+          "rendered renditions must retain scene provenance");
+    check(sdr.intent == latent::imaging::RenderIntent::SDR,
+          "SDR branch must identify its render intent");
+    check(hdr.intent == latent::imaging::RenderIntent::HDR,
+          "HDR branch must identify its render intent");
+    check(sdr.primaries == latent::imaging::Primaries::SRGBRec709 &&
+              sdr.transfer == latent::imaging::TransferFunction::SRGB,
+          "SDR branch must encode Rec.709/sRGB output semantics");
+    check(hdr.primaries == latent::imaging::Primaries::BT2020 &&
+              hdr.transfer == latent::imaging::TransferFunction::PQ,
+          "HDR branch must encode BT.2020/PQ output semantics");
+    check(sdr.reference == latent::imaging::ReferenceDomain::Display &&
+              hdr.reference == latent::imaging::ReferenceDomain::Display &&
+              sdr.range == latent::imaging::RangeSemantics::EncodedDisplay &&
+              hdr.range == latent::imaging::RangeSemantics::EncodedDisplay,
+          "both renditions must explicitly cross into the display domain");
+    check(sdr.image.extent.width == 3U && sdr.image.rgb.size() == 9U &&
+              hdr.image.rgb.size() == 9U,
+          "reference renderer must preserve image extent and RGB payload size");
+
+    const float sdrMiddleGrayNits = decodeSrgb(sdr.image.rgb[0]) * 100.0F;
+    const float hdrMiddleGrayNits = decodePqToNits(hdr.image.rgb[0]);
+    checkNear(
+        sdrMiddleGrayNits,
+        acesToneScaleForward(0.18F, makeAcesToneScaleParams(100.0F)),
+        3.0e-3F,
+        "SDR neutral rendering must follow the 100-nit tone intent");
+    checkNear(
+        hdrMiddleGrayNits,
+        acesToneScaleForward(0.18F, makeAcesToneScaleParams(1000.0F)),
+        6.0e-3F,
+        "HDR neutral rendering must follow its independent 1000-nit tone intent");
+    check(hdrMiddleGrayNits > sdrMiddleGrayNits,
+          "HDR rendering must not be reconstructed from the SDR tone-mapped result");
+    checkNear(hdr.hdrHeadroom, 1000.0F / 203.0F, 2.0e-6F,
+              "HDR headroom metadata must derive from explicit display intent");
+
+    for (std::size_t pixel = 0U; pixel < 3U; ++pixel) {
+        const std::size_t base = pixel * 3U;
+        checkNear(sdr.image.rgb[base], sdr.image.rgb[base + 1U], 3.0e-5F,
+                  "neutral AP1 samples must remain neutral in SDR output");
+        checkNear(sdr.image.rgb[base], sdr.image.rgb[base + 2U], 3.0e-5F,
+                  "neutral AP1 samples must remain neutral in SDR output");
+        checkNear(hdr.image.rgb[base], hdr.image.rgb[base + 1U], 3.0e-5F,
+                  "neutral AP1 samples must remain neutral in HDR output");
+        checkNear(hdr.image.rgb[base], hdr.image.rgb[base + 2U], 3.0e-5F,
+                  "neutral AP1 samples must remain neutral in HDR output");
+    }
+}
+
+void testRenderSceneScaleAndExposureSeparation() {
+    using namespace latent::render;
+
+    const std::vector<float> values{0.01F, 0.18F, 1.0F, 16.0F};
+    const auto base = renderReference(
+        makeNeutralScene(values, 0.0F),
+        makeHdrPqRenderConfig(0.0F, 1000.0F, 203.0F));
+    const auto shifted = renderReference(
+        makeNeutralScene(values, 4.0F),
+        makeHdrPqRenderConfig(0.0F, 1000.0F, 203.0F));
+
+    check(base.image.rgb.size() == shifted.image.rgb.size(),
+          "scene-scale comparison requires matching payloads");
+    for (std::size_t index = 0U; index < base.image.rgb.size(); ++index) {
+        checkNear(base.image.rgb[index], shifted.image.rgb[index], 3.0e-6F,
+                  "rendering must be invariant to SceneFrame coordinate scale");
+    }
+
+    const auto exposed = renderReference(
+        makeNeutralScene({0.18F}, 3.0F),
+        makeSdrRenderConfig(1.0F));
+    const float exposedNits = decodeSrgb(exposed.image.rgb[0]) * 100.0F;
+    checkNear(
+        exposedNits,
+        acesToneScaleForward(0.36F, makeAcesToneScaleParams(100.0F)),
+        5.0e-3F,
+        "render exposure must act on exposure-relative scene values after scene unscale");
+}
+
+void testExplicitGamutAndNegativeHandling() {
+    using namespace latent::render;
+
+    latent::imaging::SceneFrame scene{};
+    scene.image.extent = {2U, 1U};
+    scene.image.rgb = {
+        2.0F, -0.25F, 0.10F,
+        -0.10F, -0.10F, -0.10F,
+    };
+    const auto original = scene.image.rgb;
+
+    const auto sdr = renderReference(scene, makeSdrRenderConfig());
+    const auto hdr = renderReference(scene, makeHdrPqRenderConfig());
+
+    for (const float encoded : sdr.image.rgb) {
+        check(std::isfinite(encoded) && encoded >= 0.0F && encoded <= 1.0F,
+              "SDR gamut mapping must produce finite encoded display coordinates");
+    }
+    for (const float encoded : hdr.image.rgb) {
+        check(std::isfinite(encoded) && encoded >= 0.0F && encoded <= 1.0F,
+              "HDR gamut mapping must produce finite encoded display coordinates");
+    }
+    check(scene.image.rgb == original,
+          "rendering must never rewrite the scene-referred master");
+
+    for (std::size_t channel = 0U; channel < 3U; ++channel) {
+        check(sdr.image.rgb[3U + channel] <= 1.0e-6F,
+              "non-positive scene luminance may be clipped only at the render boundary");
+        check(hdr.image.rgb[3U + channel] <= 1.0e-5F,
+              "non-positive scene luminance must render to HDR black");
+    }
+}
+
+void testReferenceRendererValidation() {
+    using namespace latent::render;
+
+    auto malformed = makeNeutralScene({0.18F}, 0.0F);
+    malformed.transfer = latent::imaging::TransferFunction::SRGB;
+    checkInvalidArgument(
+        [&]() { (void)renderReference(malformed, makeSdrRenderConfig()); },
+        "renderer must reject display transfer functions on SceneFrame input");
+
+    auto nonFinite = makeNeutralScene({0.18F}, 0.0F);
+    nonFinite.image.rgb[1] = std::numeric_limits<float>::quiet_NaN();
+    checkInvalidArgument(
+        [&]() { (void)renderReference(nonFinite, makeSdrRenderConfig()); },
+        "renderer must reject non-finite scene samples");
+
+    checkInvalidArgument(
+        []() { (void)makeSdrRenderConfig(0.0F, 50.0F); },
+        "SDR config must reject peaks outside the supported tone-scale range");
+    checkInvalidArgument(
+        []() { (void)makeHdrPqRenderConfig(0.0F, 1000.0F, 1200.0F); },
+        "HDR config must reject nominal white above target peak");
+    checkInvalidArgument(
+        []() {
+            (void)makeHdrPqRenderConfig(
+                std::numeric_limits<float>::infinity(), 1000.0F, 203.0F);
+        },
+        "render config must reject non-finite exposure intent");
+}
+
 }  // namespace
 
 int main() {
@@ -205,6 +359,10 @@ int main() {
         testSrgbEncoding();
         testPqEncoding();
         testAcesToneScalePrimitive();
+        testIndependentReferenceRenderBranches();
+        testRenderSceneScaleAndExposureSeparation();
+        testExplicitGamutAndNegativeHandling();
+        testReferenceRendererValidation();
     } catch (const std::exception& error) {
         ++failures;
         std::cerr << "FAIL: unexpected exception: " << error.what() << '\n';
