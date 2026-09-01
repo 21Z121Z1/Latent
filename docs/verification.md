@@ -1,6 +1,6 @@
 # Verification and evidence model
 
-Latent permits optimized/fused/device-specific implementations only because correctness evidence is part of the architecture. This document defines the current validation ladder and what evidence a change is expected to provide.
+Latent permits optimized/fused/device-specific implementations only because correctness evidence is part of the architecture. This document defines the validation ladder and what evidence a change is expected to provide.
 
 ## 1. Evidence hierarchy
 
@@ -15,7 +15,7 @@ Use the strongest applicable evidence, in this order:
 7. **Lifetime/stress tests** — repeated execution proves resource ownership/reuse assumptions.
 8. **Device measurements** — performance/zero-copy/power claims require actual measured device evidence, not successful API calls.
 
-No single test class substitutes for the others. For example, a Vulkan shader matching itself on two drivers is not a semantic oracle; a reference algorithm with no production differential evidence is not proof of a Vulkan lowering.
+No single test class substitutes for the others. A Vulkan shader matching itself on two drivers is not a semantic oracle; a reference algorithm with no production differential evidence is not proof of a Vulkan lowering.
 
 ## 2. Standard local validation ladder
 
@@ -85,7 +85,8 @@ Required:
 - golden or analytically checkable vectors where possible;
 - property tests for invariants/fallbacks;
 - end-to-end reference composition test when stage ordering changes;
-- provenance/fallback selection tests.
+- provenance/fallback selection tests;
+- tests that distinguish captured/measured/calibrated/estimated/defaulted values whenever authority/provenance affects behavior.
 
 ### Noise/uncertainty
 
@@ -95,14 +96,18 @@ Required:
 - property checks on positivity/finite behavior as applicable;
 - Monte Carlo validation when closed-form propagation is not sufficient to expose composition mistakes.
 
-### Graph/compiler work
+### Graph/compiler/control-context work
 
 Required:
 
 - illegal graph/state rejection;
-- deterministic plan/fusion behavior for a fixed graph/capability input;
-- tests that semantic traits cannot be contradicted by caller annotations once schema work lands;
+- canonical operation-schema completeness and trait-contradiction tests;
+- deterministic plan/fusion behavior for fixed semantic graph/request + observation/profile + policy + capability inputs;
+- tests that capability changes may select a different legal lowering without silently changing fixed semantic intent;
+- tests that observation fallback/source remains visible and cannot masquerade as policy/default truth;
+- tests that policy-selected semantic variation is possible only when the request explicitly delegates that choice;
 - explicit tests for external/temporal/reduction barriers;
+- stable machine-readable diagnostics/debug representation for compiler failures and fallback reasons as the control plane matures;
 - plan/trace round-trip or stable debug representation if serialization/debug output is introduced.
 
 ### Vulkan kernels or optimized lowerings
@@ -125,7 +130,8 @@ Required:
 - failure cleanup paths for newly owned resources;
 - bounds/null/zero-size checks where host transfers are exposed;
 - CI against at least the existing lavapipe/runtime path;
-- future asynchronous changes must test multi-frame lifetime and synchronization ordering, not just single-dispatch success.
+- future asynchronous changes must test multi-frame lifetime and synchronization ordering, not just single-dispatch success;
+- resource-binding tests must not require semantic frame types to embed backend handles.
 
 ### Rendering
 
@@ -137,6 +143,7 @@ Required:
 - target primaries/white/transfer semantics;
 - negative/out-of-gamut handling policy;
 - explicit checks that the scene master is not mutated;
+- fixed render intent must remain fixed when only runtime capability/lowering changes;
 - production Vulkan rendering must be differentially tested against the reference renderer.
 
 ### Codec/export
@@ -170,11 +177,11 @@ When adding a tolerance:
 
 Do not loosen a gate just to obtain green CI without locating the root cause.
 
-## 6. CI as a second environment
+## 6. CI as a second environment and live evidence source
 
 GitHub Actions is not merely a repeat of local testing. It provides a distinct compiler/runtime/dependency environment.
 
-Current CI exercises:
+Current workflow coverage includes:
 
 - Ubuntu 24.04 build with strict warnings;
 - default Vulkan-enabled configuration with Mesa lavapipe when installation succeeds;
@@ -182,9 +189,9 @@ Current CI exercises:
 - isolated external libultrahdr 2.0.2 build;
 - Ultra HDR integration configuration and tests.
 
-When a PR changes code, inspect the workflow attached to the **latest head SHA**, then inspect failed jobs/steps rather than relying on an older green run.
+When a PR changes code or documentation, inspect the workflow attached to the **latest head SHA**. Exact current run IDs/status belong to GitHub live state and should not be copied into durable architecture/roadmap text.
 
-For documentation-only changes, CI is still useful because it proves the branch remains buildable and catches accidental file/build edits. A documentation change should not claim code correctness beyond the unchanged head it is based on.
+For documentation-only changes, CI is still useful because it proves the branch remains buildable and catches accidental file/build edits. A documentation change should not claim new algorithm correctness beyond the unchanged implementation it documents.
 
 ## 7. Evidence expected in PR descriptions
 
@@ -192,11 +199,12 @@ A good PR should make verification reconstructible without reading its whole dif
 
 - semantic layer(s) changed;
 - invariant/contract changed or explicitly unchanged;
+- authority classes affected (semantic rule, observation/evidence, fixed/delegated intent, capability);
 - reference evidence added/used;
 - production lowering added/used;
-- exact test/configuration commands or CI jobs run;
+- exact test/configuration commands or latest-SHA CI checks run;
 - known boundaries that remain intentionally unimplemented;
-- ADR/roadmap updates when architectural maturity or ownership changes.
+- ADR/roadmap/plan updates when architectural maturity, ownership, or sequencing changes.
 
 Avoid statements such as “100% correct.” State what was actually verified and what remains platform- or device-dependent.
 
@@ -204,12 +212,15 @@ Avoid statements such as “100% correct.” State what was actually verified an
 
 When `ExecutionTrace` exists, tests should be able to assert not only pixel output but also control decisions:
 
-- selected metadata fallback;
+- semantic request/run identity and lineage;
+- selected observations/fallbacks and their source/confidence;
+- fixed image intent;
+- delegated policy choices actually made and their reasons;
 - selected lowering/backend;
-- capability gate/fallback reason;
+- capability gate/fallback/rejection reason;
 - precision/storage choice;
-- resource lifetime class;
-- device/profile version;
+- resource lifetime/binding class;
+- device/profile/compiler version or stable fingerprint;
 - measured timing/memory counters when present.
 
-This will allow an agent to diagnose a bad result by querying one structured artifact rather than reconstructing hidden runtime decisions from source and logs.
+This should let an agent diagnose a bad result by querying one structured artifact rather than reconstructing hidden runtime decisions from source, prose logs, and platform handles.
