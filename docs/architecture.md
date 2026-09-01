@@ -6,18 +6,20 @@ Latent is a **semantic imaging compiler/runtime**, not a Vulkan library and not 
 
 The stable architectural order is:
 
-> **scene/sensor/display semantics first, graph compilation second, execution backend third, evidence throughout.**
+> **semantic meaning first, explicit intent/observations second, compilation third, execution backend fourth, evidence throughout.**
 
-That order is intentionally asymmetric. A Vulkan resource, shader pass, codec API, or Android handle may realize a semantic operation, but none of them may define what the image means.
+A Vulkan resource, shader pass, codec API, Android handle, device profile, or performance heuristic may help realize an image operation, but none of them may silently define what the image means.
 
-The system is easiest to understand as two coupled towers:
+The system is easiest to understand as four coupled planes:
 
-1. a **semantic tower** that moves image meaning from sensor measurements to a scene master, then to explicit display renditions and finally encoded artifacts; and
-2. a **realization tower** that turns semantic operations into reference behavior, compiled execution plans, production lowerings, and verification evidence.
+1. the **semantic plane** — what each image/value means and which transitions are legal;
+2. the **authority/input plane** — what was observed, what is requested/delegated, and what the runtime can execute;
+3. the **realization plane** — graph compilation, plans, resources, and executors;
+4. the **evidence plane** — reference semantics, goldens, differential/integration tests, and traces that prove the realization preserved meaning.
 
-These towers intersect at every operation. That intersection is the core abstraction of Latent.
+These planes meet at every operation. Their separation is what allows the whole repository to behave as one system rather than a collection of locally reasonable components.
 
-## 2. Semantic tower: image meaning changes only at explicit boundaries
+## 2. Semantic plane: image meaning changes only at explicit boundaries
 
 ```text
 L4  Encoded artifact / codec container
@@ -35,20 +37,20 @@ L2  SceneFrame
         | reconstruction / scene-estimation boundary
         |
 L1  RawFrame / future RawBurst
-    sensor-referred samples + capture metadata + provenance
+    sensor-referred samples + capture observations/provenance
         ^
         | capture / ingress boundary
         |
 L0  Camera2 / NDK Camera / recorded fixtures / external input
 ```
 
-The most important property is not the names of these structs; it is that each level has a different meaning and therefore a different set of legal operations.
+The important property is not the current struct names; it is that each state has a different meaning and therefore a different set of legal operations.
 
-| Semantic state | Canonical current type | What is legal | What must not be hidden here |
+| Semantic state | Canonical current type | Legal responsibilities | Must not be hidden here |
 | --- | --- | --- | --- |
 | Sensor-referred | `RawFrame` | packing/stride interpretation, black/white selection, sensor normalization, defect/LSC/WB, noise/provenance handling | display tone, display transfer, final picture brightness |
 | Scene-referred | `SceneFrame` | scene analysis, scene-linear reconstruction/denoise/merge, scene coordinate transforms | display clipping, sRGB/PQ/HLG encoding, codec gain-map policy |
-| Display-referred | `RenderedFrame` | render exposure, tone/gamut decisions, output primaries, target white/peak, display transfer | rewriting capture radiometry or scene master coordinates |
+| Display-referred | `RenderedFrame` | fixed render intent/exposure, tone/gamut decisions, output primaries, target white/peak, display transfer | rewriting capture radiometry or scene-master coordinates |
 | Codec/export | `UltraHdrRenditionPair`, encoded bytes | packing, standards metadata, container behavior, external codec integration | redefining scene or rendering semantics |
 
 ### 2.1 `SceneFrame` is the architectural center
@@ -59,20 +61,39 @@ The most important property is not the names of these structs; it is that each l
 - scene-referred;
 - unbounded;
 - negative coordinates are legal;
-- `sceneScaleEV` is an explicit coordinate scale;
+- `sceneScaleEV` is an explicit coordinate/representation scale;
 - propagated noise and confidence/provenance data may accompany the scene image.
 
-`sceneScaleEV` is **not** display white, middle gray, final image brightness, capture exposure, or tone-map exposure. Rendering must remove this representational coordinate choice before applying `renderExposureEV`.
+`sceneScaleEV` is **not** display white, middle gray, final image brightness, capture exposure, or tone-map exposure. Rendering removes this representational coordinate choice before applying the separately requested `renderExposureEV`.
 
-This separation is already tested by the output/reference branches and must remain a first-class invariant.
+### 2.2 Domain changes are typed operations, not conventions
 
-### 2.2 Domain changes are operations, not conventions
+A transition such as sensor -> scene or scene -> display must be visible in the graph/type system. The current `ImageType` and `ImagingGraph` already validate part of this: scene values must be linear/unbounded/negative-permitting, and operations that change `ReferenceDomain` must declare that change.
 
-A transition such as sensor -> scene or scene -> display must be visible in the graph/type system. The current `ImageType` and `ImagingGraph` already validate some of these conditions: scene values must be linear/unbounded/negative-permitting, and operations that change `ReferenceDomain` must declare that change.
+Target architecture should make illegal combinations difficult or impossible to construct. Prefer canonical semantic descriptors/constructors and operation schemas over repeatedly filling free-form fields correctly.
 
-Target architecture should make illegal combinations harder to construct rather than relying on every caller to fill a free-form struct correctly. Canonical semantic constructors/schemas are preferred over repeated field combinations.
+## 3. Authority/input plane: facts, intent, policy, and capabilities are different kinds of data
 
-## 3. Realization tower: what, how, and proof are separate
+ADR-0003 defines a critical control-plane boundary. Values that look like ordinary configuration fields can have different authority:
+
+| Class | Meaning | Examples | What it may influence |
+| --- | --- | --- | --- |
+| Semantic rules | versioned correctness/invariants | reference-domain rules, operation schemas, `SceneFrame` meaning, error requirements | legal graph and legal implementations |
+| Observations/evidence | learned facts with provenance | Camera2 metadata, optical black, calibration, noise profile, device-profile measurements | semantic parameters through explicit validated selection/fallback rules |
+| Image intent / delegated policy | requested result and explicitly allowed choices | render intent/exposure, requested outputs, fixed algorithm choice, quality/latency/power delegation | semantic request and compiler choices only where delegation is explicit |
+| Execution capabilities | runtime/platform facts | Vulkan features, AHB import support, codec availability, supported formats | legal lowerings, resource strategy, explicit rejection/fallback |
+
+Directional authority matters:
+
+- a capability may select a lowering; it may not silently change fixed image intent;
+- a policy default may not masquerade as captured/calibrated evidence;
+- an observation may be selected/fallbacked through an explicit rule; it may not rewrite project invariants;
+- a performance heuristic may alter observable semantics only when the request explicitly delegated that choice;
+- any such selection/fallback should be explainable from plan/trace data.
+
+This distinction is more useful than a universal configuration object. In particular, `ReconstructionConfig` is a pragmatic current adapter but mixes algorithm selection, calibration/observation-derived values, semantic parameters, and confidence. Do not expand that pattern into the final control plane.
+
+## 4. Realization plane: what, how, and physical storage are separate
 
 ```text
 semantic types + operation schemas
@@ -82,10 +103,15 @@ semantic types + operation schemas
               |
        validation / normalization
               |
+     +--------+---------+
+     | authority contexts|
+     | observations      |
+     | intent/policy     |
+     | capabilities      |
+     +--------+---------+
+              |
               v
         GraphCompiler
-              |
-      capability + policy aware lowering
               |
               v
         ExecutionPlan
@@ -99,76 +125,79 @@ FP32 deterministic          Vulkan / platform / external
         +-----------+-------------+
                     |
                     v
-             evidence + trace
+             outputs + trace
 ```
 
-`SemanticGraph`, `GraphCompiler`, and `ExecutionPlan` are architectural names here. The repository currently has an `ImagingGraph` seed and direct reference/Vulkan entry points, but it does **not** yet contain a complete compiler or first-class execution plan.
+`SemanticGraph`, `GraphCompiler`, authority-separated compiler contexts, and `ExecutionPlan` are architectural names. The repository currently has an `ImagingGraph` seed and direct reference/Vulkan entry points, but no complete compiler or first-class execution plan yet.
 
-### 3.1 Semantic contracts
+### 4.1 Operation schemas own intrinsic semantics
 
-Semantic types own image meaning. Operation schemas should eventually own intrinsic operation facts such as:
+Operation schemas should own facts such as:
 
 - input/output domains and type constraints;
 - point/neighborhood/reduction/temporal/external access pattern;
-- purity;
-- whether fusion is semantically legal;
+- purity and fusion legality;
 - precision requirements;
-- whether an operation changes reference domain;
-- required metadata/provenance;
+- whether reference domain changes;
+- required observations/provenance;
 - reference implementation availability;
-- supported production lowerings.
+- supported production lowerings and their capability requirements.
 
-Today `OperationDescriptor` allows callers to provide several of these traits manually. That was appropriate for the first IR slice but is too permissive for a system an agent must reason about reliably. A caller should not be able to label the same `OperationKind` as both pure and impure, or as domain-changing in one graph and not another, without an explicit specialized schema.
+Today `OperationDescriptor` allows callers to provide several of these traits manually. That was appropriate for the first IR slice but is too permissive for a system an agent must reason about reliably. Intrinsic traits should be derived from canonical schemas; callers should provide true operation parameters and explicitly delegated choices, not reinvent operation truth.
 
-### 3.2 Reference semantics are executable specification
+### 4.2 Reference semantics are executable specification
 
-The FP32 reference path is not a slow version of Vulkan. It is the semantic oracle against which production implementations are compared.
+The FP32 reference path is not merely a slow version of Vulkan. It is the semantic oracle against which production implementations are compared.
 
-Reference code should optimize for:
+Reference code should optimize for determinism, explicit intermediate meaning, auditable provenance, reproducible precision, and golden/property-test friendliness. Production code may fuse operations, change storage precision, alias memory, or select device-specific paths only when the resulting behavior remains inside an explicit equivalence/error budget.
 
-- determinism;
-- explicit intermediate meaning;
-- auditable standards/reference provenance;
-- reproducible precision policy;
-- golden/property-test friendliness;
-- semantic equivalence with production operations.
+### 4.3 Semantic identity/lineage is not physical storage
 
-Production code may fuse operations, change storage precision, alias memory, or select device-specific paths only when the resulting error remains inside an explicit validation budget.
+ADR-0002 separates two questions:
 
-### 3.3 Graph compiler: the missing architectural hinge
+- what semantic value is this and what source evidence produced it?
+- where are its bytes currently stored and who owns that resource?
+
+Current frame structs own CPU vectors because they are convenient host/reference values. They must not evolve by embedding Vulkan/AHardwareBuffer handles as semantic identity. Likewise, current scalar `sourceRawId` is a single-source convenience and must not be overloaded to encode future bursts or provenance graphs.
+
+Target execution associates semantic value IDs/lineage with backend-neutral plan resources, then binds those resources to host buffers, Vulkan buffers/images, imported allocations, or external codec/platform objects.
+
+### 4.4 Graph compiler is the missing hinge
 
 The graph compiler should become the single control plane that answers:
 
-- Which semantic operations are requested?
-- Are their types/domains/provenance legal?
+- Which semantic operations and outputs are requested?
+- Are their types/domains/required observations legal?
+- Which observation candidate/fallback was selected and why?
+- Which choices are fixed image intent and which were delegated to policy?
 - Which operations may be fused without changing meaning?
 - Which precision/storage boundaries are permitted?
-- Which backend/lowering is selected for this device and request?
+- Which backend/lowering is legal on the current capability context?
 - Where are reductions, temporal barriers, external interfaces, and reference-domain transitions?
 - What are resource lifetimes and synchronization requirements?
-- Why was a particular fallback or fast path selected?
+- Why was a particular fallback, rejection, or fast path selected?
 
-This is the highest-leverage missing abstraction. Without it, `ImagingGraph`, `ImagingBackend`, kernel wrappers, and direct reference functions risk becoming competing orchestration surfaces.
+Without this hinge, `ImagingGraph`, `ImagingBackend`, direct reference functions, mixed configuration structs, and kernel wrappers can become competing orchestration surfaces.
 
-### 3.4 Execution plan: explicit mechanism, no semantic invention
+### 4.5 `ExecutionPlan` is explicit mechanism, not semantic invention
 
-A future `ExecutionPlan` should be a backend-ready but semantics-linked artifact. It should contain enough information to execute and diagnose a frame without reopening the entire source tree:
+A future `ExecutionPlan` should contain enough information to execute and diagnose a frame without reopening the entire source tree:
 
-- stable operation/resource IDs;
+- stable semantic operation/value IDs and plan resource IDs;
 - selected lowering for each semantic operation/group;
-- resource types, formats, extents, ownership, and lifetimes;
+- resource format/extent/ownership/lifetime classes;
+- semantic-value -> resource association;
 - precision/storage decisions;
 - dispatch dependencies/barriers;
 - external ingress/egress boundaries;
 - required/selected capabilities;
-- semantic operation references for traceability;
-- validation/tolerance metadata where relevant.
+- delegated policy choices actually made;
+- explicit fallback/rejection reasons;
+- semantic operation references and tolerance/evidence class where relevant.
 
-It should not contain creative image-policy decisions that were absent from the semantic request.
+It must not invent creative image-policy decisions absent from the request or its explicit delegation.
 
-### 3.5 Executors
-
-Executors perform an already-decided plan.
+### 4.6 Executors execute already-decided work
 
 - The deterministic reference executor/path establishes semantic behavior.
 - Vulkan is the primary production compute realization.
@@ -176,12 +205,12 @@ Executors perform an already-decided plan.
 
 `ComputeRunner` is currently a deliberately synchronous one-queue harness with host-visible buffers and one-pipeline dispatches. It is a correctness seed, not the final scheduler, allocator, or multi-frame executor.
 
-## 4. Evidence plane: correctness is part of the architecture
+## 5. Evidence plane: correctness and explainability are architecture
 
 Every significant semantic operation should have an evidence chain:
 
 ```text
-standard / paper / explicit project invariant
+standard / paper / accepted invariant
                 |
                 v
        deterministic reference
@@ -194,20 +223,33 @@ standard / paper / explicit project invariant
       differential / integration tests
                 |
                 v
-        CI + execution trace
+        CI + ExecutionTrace
 ```
 
-Evidence is not an after-the-fact QA layer. It is how Latent permits aggressive fusion, FP16 storage, Vulkan execution, and external integration without losing semantic control.
+Evidence is how Latent permits aggressive fusion, FP16 storage, Vulkan execution, external integration, and later device specialization without losing semantic control.
 
-For exact commands and the current test matrix, see `docs/verification.md`.
+A structured `ExecutionTrace` should make diagnosis a data problem rather than reconstruction of hidden control flow. It should be able to answer:
 
-## 5. Current implementation mapped onto the architecture
+- which semantic request/run produced the result;
+- semantic value identities and lineage;
+- which observations/candidates/fallbacks were used and with what provenance/confidence;
+- fixed intent and any policy choices delegated/made;
+- compiler/profile/capability fingerprints;
+- which lowering ran each operation and why;
+- which physical resource bound each plan resource;
+- precision/storage decisions;
+- rejection/fallback causes;
+- measured timing/memory counters, explicitly separated from inferred claims.
 
-### 5.1 Sensor model and single-RAW reference reconstruction
+For commands and evidence requirements, see `docs/verification.md`.
 
-`RawFrame` carries canonical raw storage plus CFA, exposure information, black/white candidates, neutral/color gains, lens shading, noise profile, defects, and metadata source/validity/confidence.
+## 6. Current implementation mapped onto the system
 
-Current single-RAW reference flow:
+### 6.1 Sensor model and single-RAW reference reconstruction
+
+`RawFrame` carries canonical raw storage plus CFA, exposure information, black/white candidates, neutral/color gains, lens shading, noise profile, defects, and metadata source/validity/confidence where modeled.
+
+Current reference flow:
 
 ```text
 RawFrame
@@ -222,35 +264,15 @@ RawFrame
   -> SceneFrame
 ```
 
-The deterministic box-average demosaic remains available as a comparison/reference baseline; Malvar-He-Cutler 2004 is the normal reference reconstruction choice.
+The deterministic box-average demosaic remains a comparison baseline; Malvar-He-Cutler 2004 is the normal reference reconstruction choice.
 
-### 5.2 Color science
+### 6.2 Color science and uncertainty
 
-`imaging/ColorScience` and `reference/DngColor` implement the current camera-to-scene color model:
+`imaging/ColorScience` and `reference/DngColor` implement SMPTE RP 177 primary/XYZ derivation, Bradford adaptation, Robertson CCT, DNG Chapter 6 dual-illuminant interpolation, camera-neutral/white-balance conversion, ForwardMatrix and inverse-color-matrix paths, and XYZ D50 -> linear AP1/D60.
 
-- SMPTE RP 177 primary/XYZ derivation;
-- Bradford chromatic adaptation;
-- Robertson (1968) correlated-color temperature in the Adobe DNG SDK style;
-- DNG Chapter 6 dual-illuminant interpolation in mired space;
-- camera-neutral <-> white-balance xy conversion;
-- preferred ForwardMatrix path plus inverse-color-matrix fallback;
-- XYZ D50 -> linear AP1/D60.
+`reference/SensorLinearOps`, `imaging/Noise`, and `reference/NoisePropagation` provide map-driven defect correction/detection, Android-convention LSC, NOISE_PROFILE transformation, variance propagation through sensor/color stages, and lazy scene sigma queries. Monte Carlo validation is used because uncertainty propagation itself is a semantic contract.
 
-Reference/golden validation is intentionally tied to published/official implementations rather than to production shader output.
-
-### 5.3 Sensor correction and uncertainty
-
-`reference/SensorLinearOps`, `imaging/Noise`, and `reference/NoisePropagation` provide:
-
-- map-driven defect correction plus conservative noise-aware detection;
-- Android-convention 4-channel lens-shading map interpolation;
-- NOISE_PROFILE transformation into sensor-linear coordinates;
-- variance composition through LSC, WB, demosaic taps, color transform, and scene scale;
-- lazy per-pixel/channel propagated sigma queries on `SceneFrame`.
-
-Monte Carlo validation is used because uncertainty propagation is itself a semantic contract.
-
-### 5.4 Vulkan ingress and capabilities
+### 6.3 Vulkan ingress and capabilities
 
 `imaging/RawPacking`, `vulkan/IngressPlan`, and `vulkan/VulkanRuntime` separate portable correctness from optional fast paths.
 
@@ -269,17 +291,9 @@ Potential fast path:
 AImage -> AHardwareBuffer -> capability/format probe -> external-memory import
 ```
 
-Direct import is never a correctness prerequisite. Claims must distinguish:
+Direct import is never a correctness prerequisite. Claims must distinguish shared allocation/handle availability, Vulkan import success, and measured traffic elimination. `DeviceCaps` is a capability context: it chooses legal realizations; it does not redefine the image.
 
-1. shared allocation/handle availability;
-2. Vulkan import success;
-3. measured memory-traffic elimination.
-
-`DeviceCaps` records the Vulkan 1.1 baseline and optional acceleration capabilities such as FP16 storage/arithmetic, timeline semaphores, synchronization2, subgroup support, descriptor indexing, float controls, integer dot product, cooperative matrix, and AHardwareBuffer external memory.
-
-### 5.5 Production Vulkan K1a/K1b
-
-The first production lowering chain is deliberately narrow and differentially verified.
+### 6.4 Production Vulkan K1a/K1b
 
 K1a (`sensor_preprocess.comp` + `SensorPreprocessKernel`):
 
@@ -292,201 +306,208 @@ canonical uint16 RAW
  -> packed FP16 Bayer storage
 ```
 
-Computation is FP32; FP16 is a validated storage boundary.
-
 K1b (`demosaic_color.comp` + `DemosaicColorKernel`):
 
 ```text
 FP16 Bayer
- -> deterministic box or MHC demosaic (FP32 accumulation)
+ -> box or MHC demosaic (FP32 accumulation)
  -> camera-to-scene color transform (FP32)
  -> explicit scene scale
  -> packed RGBA16F scene storage
 ```
 
-Tests cover CFA patterns, odd/extreme extents, LSC on/off, both demosaic methods, negative/sign preservation, NaN absence, and error budgets after FP16 boundaries.
+Computation/precision boundaries are differentially verified across CFA patterns, edge extents, LSC states, demosaic methods, sign preservation, NaN absence, and explicit error budgets.
 
-### 5.6 Scene analysis and independent rendering
+### 6.5 Scene analysis and independent rendering
 
 `render/SceneAnalysis`, `render/AcesToneScale`, `render/OutputEncoding`, and `render/ReferenceRenderer` establish the scene -> display boundary.
 
-Key rules:
-
 - analysis removes `sceneScaleEV` before deriving exposure statistics;
-- rendering then applies an independent `renderExposureEV`;
+- rendering applies independent, fixed rendition intent such as `renderExposureEV`;
 - SDR and HDR are independent branches from the same scene master;
 - SDR target is Rec.709/D65/sRGB;
 - HDR target is BT.2020/D65/PQ;
-- the ACES-derived scalar tonescale is used only as a luminance primitive;
-- the current deterministic neutral-axis gamut compression is explicit and is **not** claimed to be the complete ACES 2 Output Transform;
-- `RenderedFrame` is display-referred and keeps target peak, nominal white, and HDR headroom alongside encoded pixels.
+- the ACES-derived scalar tonescale is a luminance primitive only;
+- current neutral-axis gamut compression is explicit and is **not** claimed to be the complete ACES 2 Output Transform;
+- `RenderedFrame` is display-referred and records target peak, nominal white, and HDR headroom alongside encoded pixels.
 
-Production Vulkan rendering is not implemented yet.
+Production Vulkan rendering remains planned.
 
-### 5.7 Ultra HDR codec boundary
+### 6.6 Ultra HDR codec boundary
 
-`codec/UltraHdrStaging` converts two explicit display renditions into the packed input forms expected by libultrahdr:
+`codec/UltraHdrStaging` converts explicit SDR/HDR `RenderedFrame` values into packed inputs for libultrahdr:
 
 ```text
 SceneFrame
-  |-- SDR render -> Rec.709/sRGB RenderedFrame -> RGBA8888 --|
-  |-- HDR render -> BT.2020/PQ RenderedFrame -> RGBA1010102 -|
-                                                              v
-                                                    libultrahdr
-                                               gain map + metadata +
-                                                     container
+  |-- SDR render -> Rec.709/sRGB -> RGBA8888 --|
+  |-- HDR render -> BT.2020/PQ   -> RGBA1010102|
+                                                v
+                                          libultrahdr
+                                 gain map + metadata + container
 ```
 
-This is an important ownership boundary: gain-map math relates explicit SDR/HDR renditions and belongs to the codec integration layer, not to RAW reconstruction or the scene master.
+Gain-map math relates explicit display renditions and belongs to the codec integration layer, not RAW reconstruction or the scene master. The external dependency is isolated in `latent::codec` so its build/fast-FP policy cannot contaminate deterministic reference targets. JPEG integration is exercised; HEIF/AVIF still need complete dependency/platform validation.
 
-The external libultrahdr dependency is isolated in `latent::codec` so its build/fast-FP policies do not alter the deterministic reference core. JPEG integration is exercised in CI; HEIF/AVIF routing exists but still needs full platform/dependency validation.
+## 7. Precision policy
 
-## 6. Precision policy
-
-Precision is semantic where it can change results and implementation detail where it cannot.
-
-- Reference reconstruction/rendering: FP32 deterministic behavior.
+- Reference reconstruction/rendering: deterministic FP32 behavior.
 - RAW storage: packed/native integer until canonical ingress conversion.
 - Current production scene storage target: RGBA16F where validated.
 - Demosaic/color cancellation-sensitive math: FP32 accumulation.
 - Future burst accumulation, motion/statistics, reductions, and similar numerically sensitive work: FP32 unless separate evidence justifies another choice.
 - FP16 storage support and FP16 arithmetic support are distinct capabilities.
 - Compiler flags that change floating-point contraction/semantics must not leak across target boundaries silently.
+- Every production precision reduction needs an explicit equivalence/error budget and differential evidence.
 
-Every production precision reduction should have an explicit error budget and differential test.
+Precision policy belongs to semantic correctness and explicitly delegated quality policy; it must not emerge accidentally from device convenience.
 
-## 7. Metadata and provenance policy
+## 8. Metadata, observation, and provenance policy
 
-A computational-photography system is only as trustworthy as its metadata semantics.
+A computational-photography system is only as trustworthy as its observation semantics.
 
 Current precedence examples are explicit: optical-black estimates outrank dynamic black, which outranks static black; dynamic white outranks static white. More generally:
 
-- a value should carry source, validity, and confidence when provenance matters;
-- fallbacks should be deterministic and explainable;
-- estimated/calibrated/device-profile values must not be indistinguishable from authoritative capture metadata;
-- future burst-derived values should retain the frame/burst evidence that produced them;
-- execution traces should record which candidate/fallback actually won.
+- a value carries source, validity, and confidence when provenance/uncertainty matters;
+- fallbacks are deterministic and explainable;
+- measured, captured, estimated, calibrated, device-profile, and policy-default values must remain distinguishable;
+- future burst-derived values retain the frame/burst evidence that produced them;
+- execution traces record which candidate/fallback actually won;
+- missing evidence may cause explicit fallback/rejection but must not be hidden by relabeling a default as an observation.
 
-## 8. Known structural gaps and design debt
+## 9. Known structural gaps and design debt
 
-These are architectural facts, not criticisms of the staged implementation.
+### 9.1 `ImagingGraph` and `ImagingBackend` are competing seeds
 
-### 8.1 `ImagingGraph` and `ImagingBackend` are competing seeds
+`ImagingGraph` expresses a general typed pipeline; `ImagingBackend` exposes only `reconstructSingleRaw()`.
 
-`ImagingGraph` expresses a general typed pipeline; `ImagingBackend` currently exposes only `reconstructSingleRaw()`. Keeping both as permanent orchestration APIs would fragment control.
+**Direction:** promote graph/compiler/execution-plan as the universal control plane. Keep convenience APIs as thin request builders/adapters.
 
-**Direction:** promote the graph/compiler/execution-plan path to the universal control plane. Keep high-level convenience APIs as thin request builders/adapters over that plane.
+### 9.2 Operation traits are too caller-controlled
 
-### 8.2 Operation traits are too caller-controlled
+`OperationDescriptor` stores intrinsic traits directly.
 
-`OperationDescriptor` currently stores `access`, `pure`, `canFuse`, `temporal`, and `changesReferenceDomain` directly. An agent/caller can construct internally inconsistent descriptions.
+**Direction:** canonical operation schemas derive these facts from kind + typed parameters.
 
-**Direction:** introduce canonical operation schemas/traits derived from operation kind plus explicitly typed parameters. Make illegal descriptions unrepresentable or fail at construction.
+### 9.3 Ingress and codec taxonomy need reconciliation
 
-### 8.3 Ingress and codec taxonomy need reconciliation
+`RawIngress` coexists with explicit graph inputs; `GainMapEncode` remains in the imaging enum despite the explicit external codec boundary.
 
-`RawIngress` exists as an `OperationKind`, while graph validation currently expects operations to have inputs and graph inputs are already a separate concept. `GainMapEncode` also remains in the imaging IR even though the implemented architecture puts gain-map/container semantics behind an external codec boundary.
+**Direction:** reconcile boundary nodes when the IR is promoted; early enum values are not authority over accepted architecture.
 
-**Direction:** reconcile external input/output nodes and codec ownership when the compiler IR is promoted. Do not use these early enum values as authority over the newer explicit boundaries.
+### 9.4 Semantic descriptors are duplicated
 
-### 8.4 Semantic descriptors are duplicated
+`SceneFrame`, `RenderedFrame`, and `ImageType` repeat primaries/white/transfer/reference/range state.
 
-`SceneFrame`, `RenderedFrame`, and `ImageType` repeat primaries/white/transfer/reference/range fields. This is useful during prototyping but increases drift risk.
+**Direction:** converge on canonical descriptors/constructors with one authoritative semantic description.
 
-**Direction:** converge on canonical semantic descriptors or validated type constructors, with frame payloads carrying/referencing one authoritative descriptor.
+### 9.5 Lineage and physical resources are under-modeled
 
-### 8.5 Execution is not yet plan- or trace-driven
+Scalar `sourceRawId` and frame-owned vectors are sufficient for current single-RAW/reference work but not future burst/executor reasoning.
 
-`ComputeRunner` dispatches individual pipelines correctly but does not expose a first-class plan, resource lifetime graph, synchronization model, capability reasoning, or machine-readable execution trace.
+**Direction:** typed identities/source sets + separate execution resources/bindings (ADR-0002).
 
-**Direction:** create `ExecutionPlan` and `ExecutionTrace` before adding substantial burst/multi-pass complexity.
+### 9.6 Configuration authority is mixed
 
-### 8.6 Capture and temporal semantics are missing
+Current request/config structs sometimes mix observed/calibrated parameters, fixed image intent, algorithm selection, confidence, and implementation-oriented choices.
+
+**Direction:** authority-separated contexts (ADR-0003); do not create a universal bag of knobs.
+
+### 9.7 Execution is not plan- or trace-driven
+
+`ComputeRunner` correctly dispatches individual pipelines but exposes no first-class resource lifetime graph, capability reasoning, or structured trace.
+
+**Direction:** create `ExecutionPlan`/`ExecutionTrace` before substantial burst/multi-pass complexity.
+
+### 9.8 Capture and temporal semantics are missing
 
 Android NDK capture contracts, recorded metadata fixtures, `RawBurst`, alignment, robust merge, temporal uncertainty, and multi-frame lifetime management are not yet implemented.
 
-**Direction:** add these through new semantic objects/operations rather than by expanding `RawFrame` or Vulkan runner ad hoc.
+**Direction:** add them through new semantic/observation objects and temporal operations, not by expanding `RawFrame` or the Vulkan runner ad hoc.
 
-## 9. Target control plane
+## 10. Target control plane
 
-A target request should eventually look conceptually like this:
+Conceptually:
 
 ```text
-ProcessingRequest
-  - capture/reconstruction intent
-  - scene output requirements
-  - render intents (0..N)
+SemanticRequest
+  - capture/reconstruction semantic choices
+  - scene outputs
+  - fixed render intents (0..N)
   - export intents (0..N)
-  - quality/latency/power policy
-          |
-          v
-SemanticGraphBuilder
-          |
-          v
-validated SemanticGraph
-          |
-          v
-GraphCompiler(semantic graph, DeviceCaps, device profile, policy)
-          |
-          v
-ExecutionPlan
-  - resources/lifetimes
-  - fused groups
-  - selected lowerings
-  - precision/storage choices
-  - barriers/external boundaries
-  - reasons/fallbacks
-          |
-          v
-Executor
-          |
-          +--> outputs
-          +--> ExecutionTrace
+  - explicitly delegated automatic choices
+            |
+            +--------------------+
+                                 |
+ObservationContext              |
+  - capture metadata            |
+  - calibration/profile facts   |
+  - provenance/confidence       |
+                                 v
+                         SemanticGraphBuilder
+                                 |
+                                 v
+                         validated SemanticGraph
+                                 |
+IntentPolicy -------------------+
+  - quality/latency/power       |
+  - only delegated choices      |
+                                 v
+CapabilityContext ----------> GraphCompiler
+  - DeviceCaps                  |
+  - platform/codec facts        |
+  - measured profile facts      |
+                                 v
+                          ExecutionPlan
+                     - semantic/resource IDs
+                     - selected lowerings
+                     - precision/storage
+                     - lifetimes/barriers
+                     - policy/capability reasons
+                     - fallbacks/rejections
+                                 |
+                                 v
+                              Executor
+                                 |
+                         +-------+-------+
+                         v               v
+                      outputs      ExecutionTrace
 ```
 
-The compiler should be deterministic for the same semantic graph + capability/profile/policy inputs. If heuristic/tuned choices are introduced, the chosen parameters and profile version must be recorded in the trace.
+The compiler should be deterministic for the same semantic graph/request + observation/profile versions + policy + capabilities. If tuned/heuristic choices are introduced, the chosen parameters, delegation, evidence/profile version, and reason must be recorded.
 
-### 9.1 Why `ExecutionTrace` matters
+The target is not “one giant object containing everything.” The target is one explicit compilation boundary whose inputs retain their authority and whose output explains every realization decision.
 
-A structured trace is one of the highest-value future features for both humans and agents. It should answer without source spelunking:
+## 11. Extension rules
 
-- which semantic graph/request produced this result;
-- which metadata candidates and fallbacks were selected;
-- which backend/lowering ran each operation;
-- which capability gate caused a fallback;
-- which storage/precision boundary was used;
-- which device/profile/version was active;
-- timing/memory counters when measured;
-- validation fingerprints/tolerance class where relevant.
-
-This makes performance and correctness debugging a data problem rather than a reconstruction of hidden control flow.
-
-## 10. Extension rules
-
-A new feature belongs in Latent only after answering these questions:
+A new feature belongs in Latent only after answering:
 
 1. What semantic state does it consume and produce?
 2. Does it change reference domain or only realization?
-3. What metadata/provenance does it require and emit?
-4. What is the deterministic reference behavior or external standard authority?
-5. Where is the policy/mechanism boundary?
-6. What precision/storage rules apply?
-7. What production lowering(s) exist or are planned?
+3. Which inputs are semantic rules, observations, fixed intent, delegated policy, and capabilities?
+4. What observations/provenance does it require and emit?
+5. What is the deterministic reference behavior or external standards authority?
+6. What precision/storage/equivalence rules apply?
+7. What production lowerings exist or are planned?
 8. What evidence proves semantic equivalence or standards conformance?
-9. Does it require a durable ADR?
-10. Can an agent discover all of the above from one canonical place rather than several copied descriptions?
+9. What lineage/resource implications exist?
+10. Does it require a durable ADR?
+11. Can an agent discover the answers from canonical sources without reconstructing them from PR history or hidden control flow?
 
-If those answers are unclear, the feature is not ready to become another execution path.
+If these answers are unclear, the feature is not ready to become another execution path.
 
-## 11. Documentation ownership
+## 12. Knowledge ownership and freshness
 
-To prevent knowledge drift:
+Agent-friendliness depends as much on **not storing stale facts** as on storing useful design.
+
+Route knowledge by volatility:
 
 - this file owns **stable system architecture and invariants**;
-- `docs/roadmap.md` owns **maturity, branch topology, and sequencing**;
-- `docs/verification.md` owns **tests, evidence requirements, and commands**;
-- `docs/decisions/` owns **durable decisions and supersession history**;
-- `README.md` is only the concise project entry point;
-- `AGENTS.md` is the concise operational contract and must link rather than duplicate deep design.
+- `docs/decisions/` owns **durable decisions, rationale, and supersession history**;
+- `docs/roadmap.md` owns **capability maturity, dependencies, and sequencing**, not exact live branch state;
+- `docs/plans/` owns **active multi-step implementation state and acceptance criteria**;
+- `docs/verification.md` owns **evidence requirements and reproducible validation commands**;
+- GitHub owns **volatile delivery facts**: current branches, PR open/merged state, head SHAs, review threads, workflow/check results;
+- `README.md` is a concise project entry point;
+- `AGENTS.md` is the low-context operating/router contract and links rather than reproduces deep design.
 
-Architecture should not be reconstructed from a chain of PR descriptions. PRs deliver increments; the documents above preserve the coherent system.
+Do not reconstruct architecture from a chain of PR descriptions. Do not reconstruct live delivery state from a dated architecture/roadmap snapshot. Query the authority appropriate to the question.

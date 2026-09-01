@@ -1,12 +1,14 @@
 # Architecture decision records
 
-This directory preserves durable architectural decisions that must outlive branch names and PR descriptions.
+This directory preserves durable architectural decisions that must outlive branch names, PR descriptions, and individual implementations.
 
 Use an ADR when a change alters a long-lived system boundary or invariant, including:
 
 - reference-domain ownership or transitions;
 - the definition of core semantic objects such as `SceneFrame` or future `RawBurst`;
 - graph/compiler/executor responsibilities;
+- semantic identity/lineage vs physical-resource ownership;
+- authority boundaries among semantic rules, observations/evidence, intent/policy, and runtime capabilities;
 - precision and error-budget policy;
 - metadata provenance precedence;
 - ownership of render, gamut, gain-map, or codec behavior;
@@ -15,6 +17,12 @@ Use an ADR when a change alters a long-lived system boundary or invariant, inclu
 - device-profile or heuristic reproducibility rules.
 
 Do not create ADRs for ordinary implementation details, refactors that preserve boundaries, or temporary branch sequencing.
+
+## Accepted decisions
+
+- `0001-semantic-control-plane.md` — semantic control plane is authoritative over execution backends.
+- `0002-semantic-lineage-and-resources.md` — semantic identity/lineage is separate from physical resource storage.
+- `0003-authority-separated-inputs.md` — semantic rules, observations, image intent/delegated policy, and execution capabilities have distinct authority.
 
 ## Lifecycle
 
@@ -48,4 +56,4 @@ What becomes easier/harder? What must downstream work obey?
 What evidence would prove implementations conform to this decision?
 ```
 
-The architecture document should summarize accepted decisions that define the current system, while the ADR retains rationale and supersession history.
+The architecture document summarizes accepted decisions that define the current system, while the ADR retains rationale and supersession history.

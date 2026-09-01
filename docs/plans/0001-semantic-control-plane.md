@@ -2,13 +2,13 @@
 
 Status: Proposed
 Owner: repository architecture
-Related: ADR-0001, ADR-0002
+Related: ADR-0001, ADR-0002, ADR-0003
 
 ## Goal
 
-Turn the current `ImagingGraph` seed plus direct reference/Vulkan entry points into one explicit route from semantic request -> validated graph -> compiled execution plan -> executor -> trace, without changing existing single-RAW image semantics.
+Turn the current `ImagingGraph` seed plus direct reference/Vulkan entry points into one explicit route from semantic request -> validated graph -> authority-separated compile context -> execution plan -> executor -> trace, without changing existing single-RAW image semantics.
 
-This plan is intentionally sequenced before large burst/multi-pass executor work because those features would otherwise amplify the current orchestration split.
+This plan is intentionally sequenced before large burst/multi-pass executor work because those features would otherwise amplify the current orchestration split and mixed-purpose configuration state.
 
 ## Acceptance criteria
 
@@ -18,23 +18,26 @@ The work is complete when all of the following are true:
 2. Callers cannot arbitrarily contradict purity/access/fusion/domain-change facts for a known operation.
 3. External graph inputs/outputs and codec boundaries have an explicit representation; `RawIngress`/`GainMapEncode` ambiguity is removed or redefined consistently with accepted ADRs.
 4. Semantic values have canonical descriptors and typed identities/lineage; backend storage is represented separately.
-5. A first-class `ExecutionPlan` records stable operation/resource IDs, selected lowerings, precision/storage choices, lifetimes/dependencies, capability requirements, and fallback reasons.
-6. A compiler deterministically produces the same plan/debug representation for the same graph + capabilities/profile + policy inputs.
-7. Existing single-RAW convenience APIs can be expressed as thin builders/adapters over the new control plane without changing their validated results.
-8. Existing K1a/K1b Vulkan lowerings are reachable through the plan/executor path and remain differentially equivalent to reference semantics.
-9. `ExecutionTrace` can correlate request/semantic lineage, compiler choices, plan resources, backend dispatches, and relevant fallback/capability decisions.
-10. Existing default and no-Vulkan CI configurations remain green; new compiler/schema/trace tests are added.
+5. Compiler inputs distinguish semantic request/rules, observations/evidence, image intent/delegated policy, and execution capabilities; one class cannot silently masquerade as another.
+6. A first-class `ExecutionPlan` records stable operation/resource IDs, selected lowerings, precision/storage choices, lifetimes/dependencies, capability requirements, policy decisions, and fallback reasons.
+7. A compiler deterministically produces the same plan/debug representation for the same semantic graph/request + observation/profile versions + policy + capabilities.
+8. Existing single-RAW convenience APIs can be expressed as thin builders/adapters over the new control plane without changing their validated results.
+9. Existing K1a/K1b Vulkan lowerings are reachable through the plan/executor path and remain differentially equivalent to reference semantics.
+10. `ExecutionTrace` can correlate request/semantic lineage, observations/fallbacks, policy decisions, compiler choices, plan resources, backend dispatches, and capability facts.
+11. Existing default, no-Vulkan, and relevant codec CI configurations remain green; new compiler/schema/context/trace tests are added.
 
 ## Architectural constraints
 
 - Follow `docs/architecture.md`.
 - ADR-0001: semantic control plane is authoritative; executors do not invent imaging policy.
 - ADR-0002: semantic identity/lineage is separate from physical resource storage.
+- ADR-0003: semantic rules, observations, intent/policy, and execution capabilities have distinct authority.
 - Preserve current `SceneFrame` meaning and the `sceneScaleEV`/`renderExposureEV` separation.
 - Keep FP32 reference behavior deterministic.
 - Keep Vulkan 1.1 compute as production baseline and optional features as accelerators.
 - Keep Ultra HDR gain-map/container behavior at the external codec boundary.
 - Do not require Android/AHardwareBuffer availability to test compiler semantics.
+- Do not make live GitHub branch/PR state part of a compiler/design contract.
 
 ## Current facts
 
@@ -47,6 +50,8 @@ The work is complete when all of the following are true:
 - `ComputeRunner` executes individual Vulkan pipelines synchronously and directly manages buffers/descriptor resources.
 - K1a/K1b kernel wrappers and differential tests already provide a strong reference-to-production validation pattern.
 - frame structs currently own host vectors and propagate a scalar `sourceRawId`.
+- `ReconstructionConfig` mixes algorithm choice, calibration/observation-derived parameters, semantic coordinate choices, and confidence values; it is useful today but must not become the universal control object.
+- `DeviceCaps` is already a useful example of capability facts being kept separate from image semantics.
 
 ## Step 1 — Freeze semantic schemas around existing operations
 
@@ -61,14 +66,15 @@ Expected schema data:
 - purity and fusion class;
 - temporal/reduction/external barrier class;
 - precision requirements;
+- required semantic/observation inputs;
 - reference implementation identifier/availability;
-- production lowering identifiers/capability requirements.
+- supported production lowerings/capability requirements.
 
 Migration:
 
 - preserve a compatibility graph-builder surface where useful;
 - derive intrinsic descriptor fields from the schema;
-- only allow caller-specified values for true parameters, not intrinsic semantics.
+- only allow caller-specified values for true operation parameters, not intrinsic semantics.
 
 Validation:
 
@@ -128,7 +134,38 @@ Validation:
 - the same semantic value can be bound to a host reference buffer or Vulkan resource without changing its semantic descriptor;
 - reference-only build remains independent of Vulkan types/headers where intended.
 
-## Step 5 — Define `ExecutionPlan`
+## Step 5 — Split request, observations, policy, and capabilities
+
+Implement ADR-0003 before introducing a universal compiler API.
+
+Conceptual inputs:
+
+```text
+SemanticRequest / validated SemanticGraph
+ObservationContext
+IntentPolicy
+CapabilityContext
+```
+
+Exact names may differ, but the authority boundaries must be explicit.
+
+Tasks:
+
+- identify current `ReconstructionConfig`, render config, metadata/profile, and `DeviceCaps` fields by authority class;
+- distinguish fixed image intent from choices explicitly delegated to automatic policy;
+- require observation fallback/selection to retain source/validity/confidence or equivalent evidence;
+- ensure capability data can select legal lowerings but cannot mutate fixed semantic intent;
+- make policy/capability choices representable in diagnostics before optimizing them.
+
+Validation:
+
+- changing only `DeviceCaps` may change plan/lowering but not the fixed semantic output contract;
+- an unavailable capability produces explicit fallback/rejection rather than an undeclared image change;
+- changing an observation source/fallback is visible in diagnostics;
+- a policy-selected algorithm is possible only when the request delegates that choice;
+- fixed `renderExposureEV` and equivalent image intent survive backend changes unchanged.
+
+## Step 6 — Define `ExecutionPlan`
 
 Start with the current single-RAW graph and existing two-kernel Vulkan chain.
 
@@ -140,7 +177,8 @@ Minimum plan contents:
 - storage/precision format;
 - dependencies/barriers;
 - lifetime intervals/classes;
-- capability requirements and fallback reason;
+- capability requirements and fallback reasons;
+- delegated policy decisions where applicable;
 - external input/output bindings.
 
 Do not add performance heuristics yet. Prefer a deterministic, conservative compiler.
@@ -148,11 +186,11 @@ Do not add performance heuristics yet. Prefer a deterministic, conservative comp
 Validation:
 
 - stable debug representation for golden tests;
-- deterministic plan for fixed graph/capability input;
-- Vulkan-off capabilities select reference/portable paths without graph changes;
+- deterministic plan for fixed graph + observations/profile + policy + capability input;
+- Vulkan-off capabilities select reference/portable paths without semantic graph changes;
 - unsupported requirements produce explicit diagnostics rather than partial plans.
 
-## Step 6 — Lower current K1a/K1b through the compiler
+## Step 7 — Lower current K1a/K1b through the compiler
 
 Connect already-proven production kernels before adding new ones.
 
@@ -169,7 +207,7 @@ Validation:
 - plan-selected K1a/K1b outputs equal the existing direct-wrapper path within the same gates;
 - compiler diagnostics explain why a fallback occurs.
 
-## Step 7 — Migrate convenience APIs
+## Step 8 — Migrate convenience APIs
 
 Make current high-level entry points thin adapters rather than parallel orchestration engines.
 
@@ -185,7 +223,7 @@ Validation:
 - current public/reference tests produce unchanged semantic results;
 - direct graph path and convenience path produce equivalent graph/plan fingerprints where applicable.
 
-## Step 8 — Add `ExecutionTrace`
+## Step 9 — Add `ExecutionTrace`
 
 Trace should be structured data first; human-readable formatting is a view.
 
@@ -193,12 +231,13 @@ Minimum trace facts:
 
 - request/run IDs;
 - semantic value IDs and lineage;
-- selected metadata/fallbacks where available;
-- compiler/profile/capability inputs;
+- concrete observation candidates, sources, selected fallbacks, and confidence where relevant;
+- compiler/profile/capability inputs or stable fingerprints;
+- fixed intent plus any delegated policy choices actually made;
 - operation -> lowering mapping;
 - plan resource -> physical binding mapping;
 - precision/storage choices;
-- fallback reasons;
+- fallback/rejection reasons;
 - dispatch/integration result status;
 - optional measured timing/memory counters, clearly separated from inferred claims.
 
@@ -206,13 +245,15 @@ Validation:
 
 - deterministic portions have stable tests;
 - trace can answer which lowering ran and why without parsing free-form logs;
+- trace can distinguish “observed”, “defaulted/estimated”, “requested”, and “selected because of capability/policy” facts;
 - no secret/platform-opaque handles are required for semantic diagnosis.
 
-## Step 9 — Retire transitional duplication deliberately
+## Step 10 — Retire transitional duplication deliberately
 
 Only after the new path is proven:
 
 - narrow/remove caller-controlled descriptor fields that are now schema-derived;
+- decompose or adapt mixed-purpose configuration objects where this improves authority clarity;
 - decide whether `ImagingBackend` remains a tiny convenience abstraction or is removed;
 - keep `ComputeRunner` internal to the Vulkan executor or replace it incrementally;
 - update architecture/roadmap and supersede ADRs only if boundaries changed.
@@ -237,25 +278,27 @@ cmake --build build-novk --parallel
 ctest --test-dir build-novk --output-on-failure
 ```
 
-Compiler-specific tests should not require a Vulkan device. Vulkan lowering/executor tests should continue to run against the CI software driver when available. Existing libultrahdr integration must remain isolated and green when compiler changes touch output graph boundaries.
+Compiler/context tests should not require a Vulkan device. Vulkan lowering/executor tests should continue to run against the CI software driver when available. Existing libultrahdr integration must remain isolated and green when compiler changes touch output graph boundaries.
 
 ## Migration strategy
 
 - Land schema/type work before execution-plan work.
+- Land authority/context decomposition before creating a universal compiler entry point.
 - Keep existing APIs functional as adapters while each new layer gains tests.
-- Avoid a flag day rewrite of reference reconstruction or Vulkan kernels.
+- Avoid a flag-day rewrite of reference reconstruction or Vulkan kernels.
 - Prefer one semantic source of truth with temporary adapters over two synchronized orchestration implementations.
 - Each PR should leave the repository in a state where the old and new paths are either equivalent or the migration boundary is explicit.
 
 ## Status ledger
 
-- Completed: architectural direction captured in ADR-0001 and ADR-0002.
-- Completed: current branch/IR/backend gaps inventoried.
-- Current: documentation/operating model established.
-- Remaining: Steps 1-9 are implementation work and have not been started by this documentation change.
+- Completed: architectural direction captured in ADR-0001, ADR-0002, and ADR-0003.
+- Completed: current IR/backend/configuration gaps inventoried.
+- Completed: documentation/operating model established.
+- Remaining: Steps 1-10 are implementation work and have not been started by this documentation change.
 
 ## Risks and open questions
 
-- Exact C++ naming/ownership for semantic IDs, lineage, plan resources, and compiler objects is intentionally unresolved until Step 1/3 design work reads actual call sites/tests.
+- Exact C++ naming/ownership for semantic IDs, lineage, compiler contexts, plan resources, and compiler objects is intentionally unresolved until implementation work reads actual call sites/tests.
 - Whether convenience reference frames remain owning structs or gain non-owning views should be decided from usage/performance evidence, not from this plan alone.
 - Future burst scheduling may require execution-plan features not visible in the current single-RAW graph; keep the plan extensible without designing an abstract scheduler before temporal semantics exist.
+- Some algorithm choices sit between fixed semantics and delegated policy. APIs must make the delegation explicit rather than assigning every knob permanently to one global policy category.

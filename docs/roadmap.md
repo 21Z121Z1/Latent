@@ -1,28 +1,12 @@
-# Latent roadmap and system status
+# Latent roadmap and capability status
 
 Status date: 2026-09-01.
 
-This document is the plan of record for **what exists, what is stacked but not merged, what is transitional, and what should be built next**. Stable design belongs in `architecture.md`; do not put long-lived architectural truth in branch names or PR descriptions.
+This document is the plan of record for **capability maturity, architectural leverage, dependencies, and sequencing**. It is deliberately **not** a live branch/PR dashboard.
 
-## 1. Branch topology
+Exact branch heads, open/merged PR state, review threads, workflow results, and commit counts are volatile repository facts. Query GitHub when they matter. Copying them here creates stale pseudo-authority and increases agent error rates.
 
-The repository currently has seven branches. They are not seven competing architectures.
-
-| Branch | Relationship to current `main` | Meaning |
-| --- | --- | --- |
-| `main` | authoritative merged baseline | Contains PRs #1-#8 through scene analysis/output primitives. Head: merge of PR #8. |
-| `feat/scene-analysis-output-primitives` | fully behind `main` | Historical PR #8 implementation branch; already absorbed. |
-| `feat/vulkan-demosaic-color-kernel` | fully behind `main` | Historical PR #6 implementation branch; already absorbed. |
-| `fix/compute-runner-lifetime` | fully behind `main` | Historical PR #7 fix branch; already absorbed. |
-| `feat/reference-sdr-hdr-renderer` | ahead of `main` | Open PR #9. Adds independent SDR/HDR reference rendering. |
-| `feat/ultrahdr-codec-staging` | stacked on the renderer branch | Open PR #10, deliberately stacked on #9. Adds explicit rendition staging and optional libultrahdr integration. This is the newest complete implementation view. |
-| `docs/agent-first-system-architecture` | stacked on the Ultra HDR branch | Open PR #11. Documentation/control-plane reframe only; no imaging/build code changes. |
-
-The documentation/control-plane work is intentionally reviewed on top of `feat/ultrahdr-codec-staging`, because that branch contains the current superset of implemented semantics. Once #9 and #10 land, the docs can follow the stack into `main` without changing architectural meaning.
-
-Branch commit counts are deliberately not part of this table: they are delivery state and change on every update. Use GitHub comparison/PR metadata when exact counts matter.
-
-## 2. Maturity vocabulary
+## 1. Maturity vocabulary
 
 Use these terms consistently:
 
@@ -33,9 +17,11 @@ Use these terms consistently:
 - **Transitional** — implemented and useful, but explicitly not the final control-plane shape.
 - **Planned** — design direction is known but no stable implementation contract exists yet.
 
-A feature may occupy several states simultaneously: e.g. rendering can be Contracted + Reference + Verified while production Vulkan lowering remains Planned.
+A capability may occupy several states simultaneously: rendering can be Contracted + Reference + Verified while production Vulkan lowering remains Planned.
 
-## 3. Capability maturity matrix
+## 2. Current capability maturity
+
+The current merged implementation baseline includes independent SDR/HDR reference rendering and explicit Ultra HDR codec staging/JPEG integration. Delivery-state details should still be verified from GitHub before acting on a specific SHA.
 
 | Capability | Contract | Reference | Production realization | Verification | Notes |
 | --- | --- | --- | --- | --- | --- |
@@ -48,25 +34,29 @@ A feature may occupy several states simultaneously: e.g. rendering can be Contra
 | DNG camera color -> AP1/D60 | yes | yes | Vulkan K1b matrix lowering | differential | Full DNG profile preparation remains reference/orchestration side. |
 | Noise propagation | yes | yes | no dedicated production lowering | Monte Carlo + analytic | Marginal variance semantics only; no covariance model yet. |
 | Scene analysis | yes | yes | no Vulkan lowering | yes | Invariant to `sceneScaleEV`. |
-| Independent SDR/HDR render | yes on #9/#10 | yes | planned | yes | Current renderer is not claimed to be full ACES 2 Output Transform. |
-| Ultra HDR rendition staging | yes on #10 | yes/deterministic | CPU packing | yes | Explicit SDR/HDR inputs; gain-map math stays external. |
-| libultrahdr JPEG integration | external contract on #10 | n/a | yes | real encode + probe in CI | External isolated target. |
+| Independent SDR/HDR render | yes | yes | planned Vulkan lowering | yes | Current renderer is not claimed to be full ACES 2 Output Transform. |
+| Ultra HDR rendition staging | yes | deterministic | CPU packing | yes | Explicit SDR/HDR inputs; gain-map math stays external. |
+| libultrahdr JPEG integration | external contract | n/a | yes | real encode + probe in CI | External isolated target. |
 | HEIF/AVIF Ultra HDR | enum/routing only | n/a | incomplete | incomplete | Needs libheif/platform validation. |
 | `ImagingGraph` semantic IR | prototype | partial validation/fusion | no universal compiler | unit tests | Transitional seed, not yet the single control plane. |
+| Canonical operation schema | planned | planned | n/a | planned | Removes caller-controlled intrinsic traits. |
+| Authority-separated compiler context | planned | n/a | n/a | planned | ADR-0003: separate semantic rules, observations, intent/policy, capabilities. |
+| Typed semantic identity + multi-source lineage | planned | n/a | n/a | planned | Required before burst provenance expands. |
+| Semantic/resource separation | planned | host/reference pattern exists | planned bindings | planned | ADR-0002; do not embed platform handles in semantic frames. |
 | Graph compiler + first-class `ExecutionPlan` | planned | planned | planned | planned | Highest-leverage architectural gap. |
 | Structured `ExecutionTrace` | planned | n/a | planned | planned | Needed for explainability/agent diagnostics. |
 | Android NDK capture contracts | planned | fixtures planned | planned | planned | Should create capture semantics, not leak platform handles inward. |
-| `RawBurst` + temporal reconstruction | planned | planned | planned | planned | Requires lifetime/scheduling model first. |
-| Production Vulkan rendering | planned | reference oracle exists | planned | differential planned | Should lower from same render semantics. |
+| `RawBurst` + temporal reconstruction | planned | planned | planned | planned | Requires identity/lineage and lifetime model first. |
+| Production Vulkan rendering | planned | reference oracle exists | planned | differential planned | Should lower from the same render semantics. |
 | Multi-frame scheduler/allocator | planned | n/a | planned | lifetime/perf tests planned | `ComputeRunner` is transitional. |
 
-## 4. Architectural priority order
+## 3. Architectural priority order
 
-This order is intentionally based on **control leverage**, not visual feature novelty. The goal is to prevent the next wave of capture/burst/render work from multiplying ad-hoc orchestration paths.
+This order is based on **control leverage**, not feature novelty. The goal is to prevent capture, burst, render, and executor work from multiplying ad-hoc orchestration paths or ambiguous configuration authority.
 
 ### P0 — Consolidate the semantic control plane
 
-Before large new multi-pass features, close the gap between `ImagingGraph`, direct reference calls, kernel wrappers, and `ImagingBackend`.
+Before substantial new multi-pass features, close the gap between `ImagingGraph`, direct reference calls, kernel wrappers, `ImagingBackend`, and mixed-purpose configuration structs.
 
 Deliverables:
 
@@ -79,14 +69,15 @@ Deliverables:
 3. Introduce canonical semantic type constructors/descriptors to reduce duplicated primaries/white/transfer/reference/range state.
 4. Define typed semantic identities and multi-source lineage so future burst provenance does not overload `sourceRawId`.
 5. Separate semantic values from physical resource bindings; host vectors and Vulkan/AHardwareBuffer resources are realizations, not image meaning.
-6. Define a first-class `ExecutionPlan` with stable operation/resource IDs, selected lowerings, precision/storage decisions, lifetimes, barriers, and capability reasons.
-7. Replace the idea of one monolithic `ImagingBackend` with thin request APIs over graph compilation + executors.
-8. Define `ExecutionTrace` before introducing complex asynchronous/multi-frame behavior.
-9. Add tests for graph schemas, illegal states, compiler determinism, lineage, resource binding, fallback reasons, and plan/trace debug representations as appropriate.
+6. Separate compiler inputs by authority (ADR-0003): semantic request/rules, observations/evidence, intent/delegated policy, and execution capabilities.
+7. Define a first-class `ExecutionPlan` with stable operation/resource IDs, selected lowerings, precision/storage decisions, lifetimes, barriers, capability requirements, policy decisions, and fallback reasons.
+8. Replace the idea of one monolithic `ImagingBackend` with thin request APIs over graph compilation + executors.
+9. Define `ExecutionTrace` before introducing complex asynchronous/multi-frame behavior.
+10. Add tests for graph schemas, illegal states, authority boundaries, compiler determinism, lineage, resource binding, fallback reasons, and plan/trace debug representations.
 
 Detailed sequencing and acceptance criteria live in `docs/plans/0001-semantic-control-plane.md`.
 
-Completion criterion: a new semantic operation has one obvious route from contract -> reference -> compiler -> lowering -> evidence, with semantic lineage and physical execution separately inspectable.
+Completion criterion: a new semantic operation has one obvious route from contract -> reference -> compiler -> lowering -> evidence, with semantic lineage, input authority, and physical execution separately inspectable.
 
 ### P1 — Android capture contracts and recorded fixtures
 
@@ -94,16 +85,17 @@ Deliverables:
 
 - NDK/Camera2 capture boundary that produces semantic capture objects rather than leaking platform handle semantics inward;
 - robust metadata decoding with source/validity/confidence;
+- explicit classification of captured facts vs calibration/profile estimates vs policy defaults;
 - active-array/crop/coordinate conventions for LSC/defects;
 - recorded metadata/raw fixtures for deterministic tests;
 - AImage/AHardwareBuffer ingress adapter with portable-copy correctness baseline;
-- explicit device probe results recorded in traces.
+- explicit device probe results recorded as capability/trace facts.
 
-Completion criterion: the same recorded capture can be reconstructed deterministically without a live camera, while live Android capture supplies the same semantic contract.
+Completion criterion: the same recorded capture can be reconstructed deterministically without a live camera, while live Android capture supplies the same semantic/observation contracts.
 
 ### P2 — `RawBurst` and temporal reconstruction semantics
 
-Do not start by writing an alignment shader. Start by defining the burst object and temporal operation semantics.
+Do not start by writing an alignment shader. Start by defining burst identity, lineage, observations, and temporal semantic operations.
 
 Deliverables:
 
@@ -115,11 +107,11 @@ Deliverables:
 - memory-lifetime model for multi-frame resources;
 - differential/golden fixtures for synthetic and recorded bursts.
 
-Completion criterion: burst output semantics can be explained and tested independently of the production scheduler.
+Completion criterion: burst output semantics and lineage can be explained and tested independently of the production scheduler.
 
 ### P3 — Production executor evolution
 
-Promote the Vulkan runtime from correctness harness to execution-plan consumer.
+Promote the Vulkan runtime from correctness harness to `ExecutionPlan` consumer.
 
 Deliverables:
 
@@ -132,7 +124,7 @@ Deliverables:
 - structured timing/memory counters in `ExecutionTrace`;
 - fallback and device capability reasoning.
 
-Completion criterion: executor behavior is explainable from an `ExecutionPlan` + `DeviceCaps`, not from hidden wrapper control flow.
+Completion criterion: executor behavior is explainable from an `ExecutionPlan` + capability context; it does not hide image-policy decisions in wrapper control flow.
 
 ### P4 — Production rendering and Android display/output integration
 
@@ -145,7 +137,7 @@ Deliverables:
 - HDR/SDR preview policy kept separate from scene master;
 - evaluate/replace the current neutral-axis gamut strategy only through an explicit render-policy/ADR change.
 
-Completion criterion: reference and production render branches agree within defined budgets on the same `SceneFrame` and render intent.
+Completion criterion: reference and production render branches agree within defined budgets on the same `SceneFrame` and fixed render intent; runtime capabilities do not silently alter that intent.
 
 ### P5 — Codec completion and format validation
 
@@ -167,26 +159,28 @@ Only after the control plane and trace are explicit:
 - profile versioning and reproducibility;
 - quality/latency/power policy inputs.
 
-Any heuristic choice must be traceable and reproducible from a profile/version + request.
+Any heuristic choice must be reproducible from semantic request + observation/profile version + delegated policy + capability context and recorded in the trace.
 
-## 5. Immediate merge/stack hygiene
+## 4. Knowledge freshness rule
 
-Current recommended order:
+Agents should minimize both search cost and stale-state risk:
 
-1. Review/merge PR #9 (`feat/reference-sdr-hdr-renderer`) into `main`.
-2. Rebase/update PR #10 onto the new `main` only after #9 merges, preserving the explicit codec boundary.
-3. Carry PR #11 documentation on top of the latest semantic superset, then retarget it as the stack collapses.
-4. Do not begin a competing long-lived feature branch from an older historical branch.
+- durable invariants -> architecture + accepted ADRs;
+- capability maturity/sequencing -> this roadmap;
+- active multi-step implementation state -> `docs/plans/`;
+- live PR/branch/SHA/review/CI status -> GitHub query at decision time;
+- historical rationale for a delivery increment -> PR/commit history only when needed.
 
-This is repository hygiene, not architecture. The semantic design should remain invariant under branch-stack cleanup.
+Do not maintain exact branch counts, commit counts, current CI run IDs, or open-PR lists in this file. Those facts expire faster than architecture changes and should remain live data.
 
-## 6. Decision triggers
+## 5. Decision triggers
 
 Create or supersede an ADR before making any change that alters one of these:
 
 - reference-domain ownership or a domain transition;
-- the definition of `SceneFrame`;
+- the definition of `SceneFrame` or future `RawBurst`;
 - semantic identity/lineage or physical-resource ownership;
+- authority boundaries among semantic rules, observations, intent/policy, and capabilities;
 - precision/error-budget policy;
 - which layer owns tone/gamut/gain-map behavior;
 - reference-vs-production authority;
