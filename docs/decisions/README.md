@@ -9,6 +9,7 @@ Use an ADR when a change alters a long-lived system boundary or invariant, inclu
 - graph/compiler/executor responsibilities;
 - semantic identity/lineage vs physical-resource ownership;
 - authority boundaries among semantic rules, observations/evidence, intent/policy, and runtime capabilities;
+- derived introspection/versioning boundaries and what is or is not an architectural source of truth;
 - precision and error-budget policy;
 - metadata provenance precedence;
 - ownership of render, gamut, gain-map, or codec behavior;
@@ -23,6 +24,7 @@ Do not create ADRs for ordinary implementation details, refactors that preserve 
 - `0001-semantic-control-plane.md` — semantic control plane is authoritative over execution backends.
 - `0002-semantic-lineage-and-resources.md` — semantic identity/lineage is separate from physical resource storage.
 - `0003-authority-separated-inputs.md` — semantic rules, observations, image intent/delegated policy, and execution capabilities have distinct authority.
+- `0004-derived-introspection-and-versioned-artifacts.md` — machine-readable system introspection is derived from canonical registries; artifact versions, fingerprints, identities, and diagnostics remain explicit and distinct.
 
 ## Lifecycle
 
