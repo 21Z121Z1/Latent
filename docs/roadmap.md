@@ -43,6 +43,8 @@ The current merged implementation baseline includes independent SDR/HDR referenc
 | Authority-separated compiler context | planned | n/a | n/a | planned | ADR-0003: separate semantic rules, observations, intent/policy, capabilities. |
 | Typed semantic identity + multi-source lineage | planned | n/a | n/a | planned | Required before burst provenance expands. |
 | Semantic/resource separation | planned | host/reference pattern exists | planned bindings | planned | ADR-0002; do not embed platform handles in semantic frames. |
+| Derived `SystemCatalog` + canonical artifact versions/fingerprints | planned | n/a | planned inspection surface | planned | ADR-0004/Plan 0002; generated from canonical registries, never a hand-edited manifest. |
+| Structured diagnostics | planned | n/a | compiler/validator-facing | planned | Stable codes/fields instead of parsing human message text. |
 | Graph compiler + first-class `ExecutionPlan` | planned | planned | planned | planned | Highest-leverage architectural gap. |
 | Structured `ExecutionTrace` | planned | n/a | planned | planned | Needed for explainability/agent diagnostics. |
 | Android NDK capture contracts | planned | fixtures planned | planned | planned | Should create capture semantics, not leak platform handles inward. |
@@ -70,14 +72,23 @@ Deliverables:
 4. Define typed semantic identities and multi-source lineage so future burst provenance does not overload `sourceRawId`.
 5. Separate semantic values from physical resource bindings; host vectors and Vulkan/AHardwareBuffer resources are realizations, not image meaning.
 6. Separate compiler inputs by authority (ADR-0003): semantic request/rules, observations/evidence, intent/delegated policy, and execution capabilities.
-7. Define a first-class `ExecutionPlan` with stable operation/resource IDs, selected lowerings, precision/storage decisions, lifetimes, barriers, capability requirements, policy decisions, and fallback reasons.
-8. Replace the idea of one monolithic `ImagingBackend` with thin request APIs over graph compilation + executors.
-9. Define `ExecutionTrace` before introducing complex asynchronous/multi-frame behavior.
-10. Add tests for graph schemas, illegal states, authority boundaries, compiler determinism, lineage, resource binding, fallback reasons, and plan/trace debug representations.
+7. Make the implemented system self-describing without creating duplicate truth (ADR-0004 / Plan 0002):
+   - derive a backend-neutral `SystemCatalog` from canonical semantic/operation/lowering/diagnostic registries plus build-feature facts;
+   - define canonical serialization, explicit artifact/schema versions, and deterministic fingerprints;
+   - distinguish scoped runtime IDs from content fingerprints;
+   - introduce structured diagnostic codes/fields so agents/tests do not parse prose;
+   - provide a bounded machine-readable inspection surface once the registries exist.
+8. Define a first-class `ExecutionPlan` with stable operation/resource IDs, selected lowerings, precision/storage decisions, lifetimes, barriers, capability requirements, policy decisions, fallback reasons, and registry/compiler fingerprints needed for interpretation.
+9. Replace the idea of one monolithic `ImagingBackend` with thin request APIs over graph compilation + executors.
+10. Define `ExecutionTrace` before introducing complex asynchronous/multi-frame behavior, including the schema/catalog/compiler identity needed to interpret persisted trace data.
+11. Add tests for graph schemas, illegal states, authority boundaries, compiler determinism, lineage, resource binding, catalog completeness, canonical serialization/fingerprints, diagnostic codes, fallback reasons, and plan/trace debug representations.
 
-Detailed sequencing and acceptance criteria live in `docs/plans/0001-semantic-control-plane.md`.
+Detailed sequencing and acceptance criteria live in:
 
-Completion criterion: a new semantic operation has one obvious route from contract -> reference -> compiler -> lowering -> evidence, with semantic lineage, input authority, and physical execution separately inspectable.
+- `docs/plans/0001-semantic-control-plane.md` — semantic/compiler migration;
+- `docs/plans/0002-derived-system-introspection.md` — the cross-cutting self-description/versioning/diagnostics slice.
+
+Completion criterion: a new semantic operation has one obvious route from contract -> reference -> compiler -> lowering -> evidence, with semantic lineage, input authority, physical execution, and the build-wide implemented capability relation machine-queryable without a hand-maintained duplicate manifest.
 
 ### P1 — Android capture contracts and recorded fixtures
 
@@ -168,6 +179,8 @@ Agents should minimize both search cost and stale-state risk:
 - durable invariants -> architecture + accepted ADRs;
 - capability maturity/sequencing -> this roadmap;
 - active multi-step implementation state -> `docs/plans/`;
+- implemented build-wide semantic/operation/lowering inventory -> today canonical code/build/tests; once ADR-0004 lands in code, use the derived `SystemCatalog` rather than a hand-written manifest;
+- live runtime/device facts -> capability/runtime query, never static catalog or roadmap;
 - live PR/branch/SHA/review/CI status -> GitHub query at decision time;
 - historical rationale for a delivery increment -> PR/commit history only when needed.
 
@@ -181,6 +194,7 @@ Create or supersede an ADR before making any change that alters one of these:
 - the definition of `SceneFrame` or future `RawBurst`;
 - semantic identity/lineage or physical-resource ownership;
 - authority boundaries among semantic rules, observations, intent/policy, and capabilities;
+- whether a machine-readable catalog/artifact is authoritative or derived, or the compatibility/versioning boundary for persisted control artifacts;
 - precision/error-budget policy;
 - which layer owns tone/gamut/gain-map behavior;
 - reference-vs-production authority;
