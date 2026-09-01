@@ -13,9 +13,10 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      - name: Install software Vulkan driver (Mesa lavapipe)
+      - name: Install native dependencies
         run: |
           sudo apt-get update -qq
+          sudo apt-get install -y -qq libjpeg-dev
           if ! sudo apt-get install -y -qq libvulkan1 mesa-vulkan-drivers; then
             echo "lavapipe installation failed; runtime smoke tests will skip gracefully"
           fi
@@ -33,3 +34,36 @@ jobs:
         run: cmake --build build-novk --parallel
       - name: Test (no Vulkan runtime)
         run: ctest --test-dir build-novk --output-on-failure
+
+      - name: Build isolated libultrahdr 2.0.2
+        run: |
+          git clone --depth 1 --branch v2.0.2 https://github.com/google/libultrahdr.git "$RUNNER_TEMP/libultrahdr"
+          cmake -S "$RUNNER_TEMP/libultrahdr" -B "$RUNNER_TEMP/libultrahdr-build" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX="$RUNNER_TEMP/uhdr-install" \
+            -DBUILD_SHARED_LIBS=ON \
+            -DUHDR_BUILD_EXAMPLES=OFF \
+            -DUHDR_BUILD_TESTS=OFF \
+            -DUHDR_BUILD_BENCHMARK=OFF \
+            -DUHDR_BUILD_FUZZERS=OFF \
+            -DUHDR_BUILD_JAVA=OFF \
+            -DUHDR_ENABLE_HEIF=OFF \
+            -DUHDR_ENABLE_INSTALL=ON \
+            -DUHDR_WRITE_ISO=ON \
+            -DUHDR_WRITE_XMP=ON
+          cmake --build "$RUNNER_TEMP/libultrahdr-build" --parallel
+          cmake --install "$RUNNER_TEMP/libultrahdr-build"
+      - name: Configure (libultrahdr integration)
+        run: |
+          cmake -S . -B build-uhdr \
+            -DLATENT_BUILD_TESTS=ON \
+            -DLATENT_STRICT_WARNINGS=ON \
+            -DLATENT_ENABLE_VULKAN_RUNTIME=OFF \
+            -DLATENT_ENABLE_ULTRAHDR=ON \
+            -DLATENT_ULTRAHDR_ROOT="$RUNNER_TEMP/uhdr-install"
+      - name: Build (libultrahdr integration)
+        run: cmake --build build-uhdr --parallel
+      - name: Test (libultrahdr integration)
+        run: |
+          export LD_LIBRARY_PATH="$RUNNER_TEMP/uhdr-install/lib:${LD_LIBRARY_PATH:-}"
+          ctest --test-dir build-uhdr --output-on-failure --verbose

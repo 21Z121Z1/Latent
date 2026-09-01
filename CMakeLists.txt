@@ -5,6 +5,10 @@ option(LATENT_BUILD_TESTS "Build Latent tests" ON)
 option(LATENT_STRICT_WARNINGS "Treat compiler warnings as errors" ON)
 option(LATENT_ENABLE_VULKAN_RUNTIME
     "Enable the Vulkan runtime capability adapter (FetchContent volk + headers)" ON)
+option(LATENT_ENABLE_ULTRAHDR
+    "Enable the external libultrahdr encoder adapter" OFF)
+set(LATENT_ULTRAHDR_ROOT "" CACHE PATH
+    "Optional libultrahdr installation prefix used when LATENT_ENABLE_ULTRAHDR=ON")
 
 if(LATENT_ENABLE_VULKAN_RUNTIME)
     include(FetchContent)
@@ -133,6 +137,75 @@ else()
     endif()
 endif()
 
+# Keep codec staging separate from the imaging core. In particular, do not
+# FetchContent libultrahdr into this CMake scope: upstream intentionally uses
+# directory-wide compile options (including fast FP contraction) that must not
+# alter Latent's deterministic reference backend.
+set(LATENT_CODEC_SOURCES
+    src/codec/UltraHdrStaging.cpp
+)
+
+if(LATENT_ENABLE_ULTRAHDR)
+    set(_LATENT_ULTRAHDR_INCLUDE_HINTS)
+    set(_LATENT_ULTRAHDR_LIBRARY_HINTS)
+    if(LATENT_ULTRAHDR_ROOT)
+        list(APPEND _LATENT_ULTRAHDR_INCLUDE_HINTS
+            "${LATENT_ULTRAHDR_ROOT}/include")
+        list(APPEND _LATENT_ULTRAHDR_LIBRARY_HINTS
+            "${LATENT_ULTRAHDR_ROOT}/lib"
+            "${LATENT_ULTRAHDR_ROOT}/lib64")
+    endif()
+
+    find_path(LATENT_ULTRAHDR_INCLUDE_DIR
+        NAMES ultrahdr_api.h
+        HINTS ${_LATENT_ULTRAHDR_INCLUDE_HINTS}
+    )
+    find_library(LATENT_ULTRAHDR_LIBRARY
+        NAMES uhdr
+        HINTS ${_LATENT_ULTRAHDR_LIBRARY_HINTS}
+    )
+    if(NOT LATENT_ULTRAHDR_INCLUDE_DIR OR NOT LATENT_ULTRAHDR_LIBRARY)
+        message(FATAL_ERROR
+            "LATENT_ENABLE_ULTRAHDR=ON requires an external libultrahdr installation. "
+            "Set LATENT_ULTRAHDR_ROOT or LATENT_ULTRAHDR_INCLUDE_DIR/LATENT_ULTRAHDR_LIBRARY.")
+    endif()
+
+    add_library(latent_ultrahdr_external UNKNOWN IMPORTED)
+    set_target_properties(latent_ultrahdr_external PROPERTIES
+        IMPORTED_LOCATION "${LATENT_ULTRAHDR_LIBRARY}"
+        INTERFACE_INCLUDE_DIRECTORIES "${LATENT_ULTRAHDR_INCLUDE_DIR}"
+    )
+    list(APPEND LATENT_CODEC_SOURCES src/codec/UltraHdrEncoder.cpp)
+endif()
+
+add_library(latent_codec ${LATENT_CODEC_SOURCES})
+add_library(latent::codec ALIAS latent_codec)
+target_link_libraries(latent_codec PUBLIC latent::core)
+target_include_directories(latent_codec
+    PUBLIC
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+)
+target_compile_features(latent_codec PUBLIC cxx_std_20)
+target_compile_options(latent_codec PRIVATE
+    $<$<CXX_COMPILER_ID:GNU>:-ffp-contract=off>)
+
+if(LATENT_ENABLE_ULTRAHDR)
+    target_link_libraries(latent_codec PRIVATE latent_ultrahdr_external)
+    target_compile_definitions(latent_codec PUBLIC LATENT_HAS_ULTRAHDR=1)
+endif()
+
+if(MSVC)
+    target_compile_options(latent_codec PRIVATE /W4)
+    if(LATENT_STRICT_WARNINGS)
+        target_compile_options(latent_codec PRIVATE /WX)
+    endif()
+else()
+    target_compile_options(latent_codec PRIVATE -Wall -Wextra -Wpedantic -Wconversion -Wshadow)
+    if(LATENT_STRICT_WARNINGS)
+        target_compile_options(latent_codec PRIVATE -Werror)
+    endif()
+endif()
+
 if(LATENT_BUILD_TESTS)
     enable_testing()
     add_executable(latent_tests tests/test_main.cpp)
@@ -174,6 +247,25 @@ if(LATENT_BUILD_TESTS)
         endif()
     endif()
     add_test(NAME latent_render_tests COMMAND latent_render_tests)
+
+    add_executable(latent_codec_tests tests/test_codec.cpp)
+    target_link_libraries(latent_codec_tests PRIVATE latent::codec)
+    target_compile_features(latent_codec_tests PRIVATE cxx_std_20)
+    target_compile_options(latent_codec_tests PRIVATE
+        $<$<CXX_COMPILER_ID:GNU>:-ffp-contract=off>)
+    if(MSVC)
+        target_compile_options(latent_codec_tests PRIVATE /W4)
+        if(LATENT_STRICT_WARNINGS)
+            target_compile_options(latent_codec_tests PRIVATE /WX)
+        endif()
+    else()
+        target_compile_options(latent_codec_tests PRIVATE
+            -Wall -Wextra -Wpedantic -Wconversion -Wshadow)
+        if(LATENT_STRICT_WARNINGS)
+            target_compile_options(latent_codec_tests PRIVATE -Werror)
+        endif()
+    endif()
+    add_test(NAME latent_codec_tests COMMAND latent_codec_tests)
 
     if(LATENT_ENABLE_VULKAN_RUNTIME)
         add_executable(latent_compute_runner_lifetime_tests

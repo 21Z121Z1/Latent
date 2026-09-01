@@ -21,14 +21,14 @@ RawFrame
   -> optical/dynamic/static black selection
   -> dynamic/static white selection
   -> sensor normalization (FP32, no clamp)
-  -> white-balance gains on CFA samples
-  -> deterministic baseline demosaic
-  -> caller-supplied camera-RGB -> ACEScg/AP1 D60 matrix (FP32)
+  -> defect correction / lens shading / white balance
+  -> Malvar-He-Cutler demosaic
+  -> DNG camera color model -> XYZ D50 -> ACEScg/AP1 D60 (FP32)
   -> apply explicit `2^sceneScaleEV` coordinate scale
   -> SceneFrame (linear AP1/D60 semantics, explicit sceneScaleEV)
 ```
 
-The current demosaic is intentionally a deterministic baseline, not the intended final image-quality algorithm. DNG dual-illuminant interpolation, lens shading, defect correction, noise-aware reconstruction, chromatic aberration correction, denoise, SDR/HDR rendering, gain-map encoding, burst alignment/merge, and production Vulkan kernels remain separate milestones.
+The current reconstruction path is deterministic and differential-testable. Chromatic aberration correction, modern scene denoise, Android capture integration, burst alignment/merge, and joint multi-frame reconstruction remain separate milestones.
 
 ## Vulkan ingress boundary
 
@@ -193,8 +193,55 @@ RAW-to-scene chain as the first production neighborhood kernel:
   preservation, median error <=0.2%, p99 <=1%, and a pixel-scale absolute
   tolerance for near-cancellation outputs.
 
-This is still execution of a single-RAW reconstruction graph, not burst
-reconstruction, denoising, rendering, or an Android capture integration.
+## Independent SDR/HDR reference rendering (implemented)
+
+`render/SceneAnalysis` + `render/ReferenceRenderer` establish the stable
+scene-to-display split:
+
+- scene analysis removes `sceneScaleEV` as a representational coordinate
+  choice before deriving exposure statistics;
+- rendering independently applies `renderExposureEV`, so capture reference,
+  scene coordinate scale, and final picture brightness remain separate;
+- SDR renders to Rec.709/D65/sRGB and HDR renders independently to
+  BT.2020/D65/PQ from the same AP1/D60 SceneFrame;
+- the official-ACES-derived scalar tonescale is used only as a luminance
+  primitive; Latent does not label its current deterministic neutral-axis
+  gamut compression as the complete ACES 2 Output Transform;
+- `RenderedFrame` is explicitly display-referred and carries encoded pixels,
+  target peak, nominal white, and HDR headroom while leaving SceneFrame
+  unmodified.
+
+## Ultra HDR codec boundary (implemented, JPEG integration validated)
+
+`codec/UltraHdrStaging` + optional `codec/UltraHdrEncoder` implement the
+rendition-to-codec boundary without moving gain-map semantics into the ISP:
+
+```text
+SceneFrame
+  |-- independent SDR render -> Rec.709/sRGB RenderedFrame -> RGBA8888 --|
+  |-- independent HDR render -> BT.2020/PQ RenderedFrame -> RGBA1010102 -|
+                                                                        v
+                                                     external libultrahdr
+                                               gain map / ISO 21496 / codec
+```
+
+- staging is deterministic and dependency-free; it validates colorimetry,
+  reference domain, source provenance, extents, target peak, finite encoded
+  range, and packed stride;
+- packed words follow libultrahdr's documented little-endian RGBA8888 and
+  RGBA1010102 layouts and use aligned uint32 storage;
+- libultrahdr is an external optional dependency, not a FetchContent child of
+  Latent, because upstream uses directory-wide fast-math options that must not
+  alter the deterministic reference core;
+- the adapter registers both `UHDR_SDR_IMG` and `UHDR_HDR_IMG`, supplies the
+  HDR target display peak, and delegates gain-map generation/metadata/container
+  logic to libultrahdr;
+- CI independently builds v2.0.2 and performs a real JPEG Ultra HDR encode.
+  HEIF/AVIF routing exists but still needs libheif/Android-specific validation.
+
+The implemented codec path therefore follows the architectural rule that gain
+maps relate two explicit output renditions; they are not reconstructed from an
+SDR tone mapper or computed directly from the scene master.
 
 ## Near-term milestones
 
@@ -203,6 +250,6 @@ reconstruction, denoising, rendering, or an Android capture integration.
 3. ~~Reference defect correction, LSC, and noise-profile propagation.~~ (done)
 4. ~~Vulkan loader/device-capability adapter plus canonical RAW ingress buffer.~~ (done)
 5. ~~First differential Vulkan kernels: black/normalize/LSC/WB plus demosaic/color transform.~~ (done)
-6. Scene analysis and independent SDR/HDR render branches.
-7. libultrahdr integration from explicit SDR/HDR renditions.
+6. ~~Scene analysis and independent SDR/HDR render branches.~~ (reference done; Vulkan production pending)
+7. ~~libultrahdr integration from explicit SDR/HDR renditions.~~ (JPEG integration done; HEIF/AVIF device validation pending)
 8. RawBurst temporal model, alignment, robust merge, and memory-lifetime analysis.
