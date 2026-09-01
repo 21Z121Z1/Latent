@@ -7,15 +7,16 @@ Latent permits optimized/fused/device-specific implementations only because corr
 Use the strongest applicable evidence, in this order:
 
 1. **Semantic/type validation** — illegal image/reference-domain states are rejected.
-2. **Golden vectors** — published standards, official reference implementations, or hand-verifiable cases pin constants and algorithms.
-3. **Property tests** — invariants hold across generated/representative inputs.
-4. **Reference composition tests** — independently implemented stages compose to the same result as a higher-level reference path.
-5. **Differential tests** — Vulkan/optimized output matches the deterministic reference within an explicit numerical budget.
-6. **Integration tests** — external libraries/platform boundaries produce valid real artifacts/queries.
-7. **Lifetime/stress tests** — repeated execution proves resource ownership/reuse assumptions.
-8. **Device measurements** — performance/zero-copy/power claims require actual measured device evidence, not successful API calls.
+2. **Structural/introspection conformance** — canonical schemas/registries, derived catalogs, diagnostic registries, and versioned machine-readable artifacts are complete, internally referentially valid, and deterministic.
+3. **Golden vectors** — published standards, official reference implementations, or hand-verifiable cases pin constants and algorithms.
+4. **Property tests** — invariants hold across generated/representative inputs.
+5. **Reference composition tests** — independently implemented stages compose to the same result as a higher-level reference path.
+6. **Differential tests** — Vulkan/optimized output matches the deterministic reference within an explicit numerical budget.
+7. **Integration tests** — external libraries/platform boundaries produce valid real artifacts/queries.
+8. **Lifetime/stress tests** — repeated execution proves resource ownership/reuse assumptions.
+9. **Device measurements** — performance/zero-copy/power claims require actual measured device evidence, not successful API calls.
 
-No single test class substitutes for the others. A Vulkan shader matching itself on two drivers is not a semantic oracle; a reference algorithm with no production differential evidence is not proof of a Vulkan lowering.
+No single test class substitutes for the others. A Vulkan shader matching itself on two drivers is not a semantic oracle; a reference algorithm with no production differential evidence is not proof of a Vulkan lowering; a hand-written catalog matching documentation is not proof that it matches the registries used by the compiler.
 
 ## 2. Standard local validation ladder
 
@@ -110,6 +111,22 @@ Required:
 - stable machine-readable diagnostics/debug representation for compiler failures and fallback reasons as the control plane matures;
 - plan/trace round-trip or stable debug representation if serialization/debug output is introduced.
 
+### Derived introspection, canonical serialization, or diagnostic work
+
+Required by ADR-0004 / Plan 0002 as those surfaces land:
+
+- every canonical operation schema appears exactly once in the derived system catalog;
+- every registered production lowering resolves to a legal semantic operation/group and explicit build/capability requirements;
+- optional build integrations appear/vanish only through expected build-feature/catalog entries;
+- static catalog output is unchanged when only runtime `DeviceCaps` values change;
+- catalog/canonical artifact serialization is deterministic for logically identical input regardless of incidental container iteration order;
+- scoped IDs and deterministic content fingerprints are tested as distinct concepts;
+- semantic/schema changes alter the expected registry/catalog fingerprint or version-visible data;
+- incompatible catalog/graph/plan/trace format versions are rejected or explicitly migrated, never silently reinterpreted;
+- diagnostic codes are unique, structured context fields are testable, and machine-facing tests do not parse human message wording;
+- introspection works in the no-Vulkan configuration and does not require live GitHub state;
+- generated catalog/debug artifacts are reproducible and are not committed as a second hand-maintained source of truth.
+
 ### Vulkan kernels or optimized lowerings
 
 Required:
@@ -191,6 +208,8 @@ Current workflow coverage includes:
 
 When a PR changes code or documentation, inspect the workflow attached to the **latest head SHA**. Exact current run IDs/status belong to GitHub live state and should not be copied into durable architecture/roadmap text.
 
+The merge gate should be machine-enforced with repository rules/required checks when the repository owner authorizes that governance configuration. Until such enforcement exists, an agent performing merges must explicitly verify the reviewed latest head and applicable latest-SHA CI rather than treating an older green run as permission to merge.
+
 For documentation-only changes, CI is still useful because it proves the branch remains buildable and catches accidental file/build edits. A documentation change should not claim new algorithm correctness beyond the unchanged implementation it documents.
 
 ## 7. Evidence expected in PR descriptions
@@ -200,6 +219,7 @@ A good PR should make verification reconstructible without reading its whole dif
 - semantic layer(s) changed;
 - invariant/contract changed or explicitly unchanged;
 - authority classes affected (semantic rule, observation/evidence, fixed/delegated intent, capability);
+- catalog/schema/diagnostic/version impact when canonical registries or machine-readable control artifacts change;
 - reference evidence added/used;
 - production lowering added/used;
 - exact test/configuration commands or latest-SHA CI checks run;
@@ -220,7 +240,22 @@ When `ExecutionTrace` exists, tests should be able to assert not only pixel outp
 - capability gate/fallback/rejection reason;
 - precision/storage choice;
 - resource lifetime/binding class;
-- device/profile/compiler version or stable fingerprint;
+- catalog/semantic-schema/compiler/trace version or stable fingerprint needed to interpret the artifact;
+- explicit structured diagnostic codes for failures/fallbacks where applicable;
 - measured timing/memory counters when present.
 
 This should let an agent diagnose a bad result by querying one structured artifact rather than reconstructing hidden runtime decisions from source, prose logs, and platform handles.
+
+## 9. Future system-catalog verification
+
+When ADR-0004's derived `SystemCatalog` exists, it becomes the preferred **query surface** for implemented build-wide capability, not a new authority. CI should verify that it remains a faithful deterministic projection of the registries used by compilation.
+
+At minimum CI should be able to assert:
+
+- operation/type/lowering registration completeness and referential integrity;
+- build-feature visibility in default/no-Vulkan/optional-integration configurations;
+- deterministic canonical output and expected fingerprints;
+- diagnostic-code uniqueness;
+- separation from runtime capability values and live delivery state;
+- explicit compatibility/version failure for unsupported persisted artifacts;
+- a machine-readable catalog dump can be produced without source-tree archaeology.
