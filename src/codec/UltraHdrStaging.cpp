@@ -153,7 +153,7 @@ UltraHdrRenditionPair stageUltraHdrRenditions(
     validateSdr(sdr);
     validateHdr(hdr);
 
-    if (sdr.sourceRawId != hdr.sourceRawId) {
+    if (sdr.sourceRawId != hdr.sourceRawId || !imaging::sameLineage(sdr.lineage, hdr.lineage)) {
         throw std::invalid_argument(
             "Ultra HDR renditions must originate from the same scene source");
     }
@@ -165,6 +165,7 @@ UltraHdrRenditionPair stageUltraHdrRenditions(
 
     UltraHdrRenditionPair pair{};
     pair.sourceRawId = sdr.sourceRawId;
+    pair.lineage = sdr.lineage;
     pair.sdr = packSdr(sdr);
     pair.hdr = packHdr(hdr);
     pair.hdrNominalWhiteNits = hdr.nominalWhiteNits;

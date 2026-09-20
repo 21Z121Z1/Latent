@@ -2,7 +2,7 @@
 
 Status: Active
 Related: ADR-0001 through ADR-0004; Plans 0001 and 0002
-Current step: Establish required CI execution and offline reproduction inputs.
+Current step: Implement deterministic temporal reference stages after the contract slice.
 
 ## Scope and authority
 
@@ -41,7 +41,8 @@ No camera or performance claim may be inferred from emulator or lavapipe tests.
 | Unchanged default strict build/tests | GitHub Ubuntu 24.04, GCC 13.3, Mesa | Run 33457999246, job 106054161632, 4/4 CTest; full log inspected | VERIFIED | 1939cb424deef1272602d2b565bd3ee3c6349f51 |
 | Unchanged no-Vulkan build/tests | Same GitHub runner | Same job, 3/3 CTest | VERIFIED | Same baseline |
 | Isolated libultrahdr integration | Same GitHub runner, libultrahdr 2.0.2 | Same job, 3/3 CTest | VERIFIED | Same baseline |
-| Temporal reference and Vulkan | Not implemented yet | No evidence yet | UNVERIFIED | Not applicable |
+| Typed burst, borrowed normalization, lineage, noise units | Editing container, strict no-Vulkan build | 4/4 CTest, including temporal contract tests; CI pending | PARTIALLY VERIFIED | Contract increment |
+| Temporal algorithms and Vulkan | Not implemented yet | No evidence yet | UNVERIFIED | Not applicable |
 | Android integration | Not implemented yet | No evidence yet | UNVERIFIED | Not applicable |
 | Real RAW capture, metadata, IMU, OEM behavior | Physical Android device required | No device connected | UNVERIFIED | Not applicable |
 | Mobile latency, thermals, energy, memory traffic | Physical Android device required | No device connected | UNVERIFIED | Not applicable |
@@ -51,7 +52,10 @@ No camera or performance claim may be inferred from emulator or lavapipe tests.
 The editing container cannot resolve GitHub and has no Android SDK or Vulkan
 ICD. The GitHub connector supports writes and Actions executes native builds.
 CI reproduction artifacts contain source archives and Git objects, not local
-Git configuration or credentials. These inputs allow independent offline builds.
+Git configuration or credentials. The first artifact was downloaded, its SHA-256
+and internal checksums were verified, and the unchanged main no-Vulkan baseline
+passed 3/3 CTest in the editing container. The first branch CI also passed all
+existing gates with a required lavapipe probe. Native temporal gates are next.
 
 The uploaded archive was inspected only at the directory-list level. Its private
 reverse-engineering, disassembly, model, and tuning content is excluded from

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "latent/imaging/Noise.h"
+#include "latent/imaging/Lineage.h"
 #include "latent/imaging/Types.h"
 
 #include <cstdint>
@@ -18,7 +19,8 @@ struct SceneImageF32 {
 };
 
 struct SceneFrame {
-    std::uint64_t sourceRawId = 0;
+    std::uint64_t sourceRawId = 0;  // Legacy single-frame compatibility only.
+    Lineage lineage{};
     SceneImageF32 image{};
 
     Primaries primaries = Primaries::ACEScgAP1;
