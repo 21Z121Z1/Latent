@@ -24,9 +24,10 @@ struct SigmaQuery {
     const imaging::PropagatedNoise& noise,
     const SigmaQuery& query);
 
-// Transforms raw-code-domain noise coefficients into the normalized
+// Transforms explicitly raw-code-domain noise coefficients into the normalized
 // sensor-linear domain selected by `levels`:
 //   S' = S / (W - B_c),  O' = (S * B_c + O) / (W - B_c)^2
+// A profile already in NormalizedBlackSubtracted coordinates is returned unchanged.
 [[nodiscard]] imaging::NoiseModel normalizeNoiseModel(
     const imaging::NoiseModel& rawCodeModel,
     const SelectedRawLevels& levels);

@@ -17,7 +17,11 @@ constexpr std::size_t kChannelCount = 4;
 imaging::NoiseModel normalizeNoiseModel(
     const imaging::NoiseModel& rawCodeModel,
     const SelectedRawLevels& levels) {
+    const auto check = imaging::validateNoiseModel(rawCodeModel);
+    if (!check.valid) throw std::invalid_argument(check.message);
+    if (rawCodeModel.coordinate == imaging::NoiseCoordinate::NormalizedBlackSubtracted) return rawCodeModel;
     imaging::NoiseModel result{};
+    result.coordinate = imaging::NoiseCoordinate::NormalizedBlackSubtracted;
 
     for (std::size_t c = 0; c < kChannelCount; ++c) {
         const float black = levels.black.cfa[c];

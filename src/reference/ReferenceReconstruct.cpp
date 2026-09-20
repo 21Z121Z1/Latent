@@ -121,6 +121,7 @@ imaging::SceneFrame reconstructSingleRaw(
 
     imaging::SceneFrame scene{};
     scene.sourceRawId = raw.id;
+    scene.lineage = imaging::singleFrameLineage(imaging::FrameId{raw.id});
     scene.image.extent = rgb.extent;
     scene.image.rgb.resize(static_cast<std::size_t>(rgb.extent.pixelCount()) * 3U);
     scene.sceneScaleEV = config.sceneScaleEV;

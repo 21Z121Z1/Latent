@@ -1,6 +1,7 @@
 #pragma once
 
 #include "latent/imaging/RawFrame.h"
+#include "latent/runtime/RawBindings.h"
 
 #include <array>
 #include <vector>
@@ -21,8 +22,9 @@ struct SensorLinearFrameF32 {
     SelectedRawLevels levels{};
 };
 
-[[nodiscard]] SelectedRawLevels selectRawLevels(const imaging::RawFrame& frame);
+[[nodiscard]] SelectedRawLevels selectRawLevels(const imaging::RawFrameMetadata& frame);
 [[nodiscard]] float normalizeSensorCode(float code, float black, float white);
 [[nodiscard]] SensorLinearFrameF32 normalizeRaw(const imaging::RawFrame& frame);
+[[nodiscard]] SensorLinearFrameF32 normalizeRaw(const runtime::RawFrameView& frame);
 
 }  // namespace latent::reference

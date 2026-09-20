@@ -49,7 +49,8 @@ struct MetadataValue {
     float confidence = 0.0F;
 
     [[nodiscard]] bool usable() const noexcept {
-        return value.has_value() && validity != MetadataValidity::Invalid;
+        return value.has_value() &&
+               (validity == MetadataValidity::Valid || validity == MetadataValidity::Suspect);
     }
 };
 
@@ -57,11 +58,17 @@ struct BlackLevel {
     std::array<float, 4> cfa{0.0F, 0.0F, 0.0F, 0.0F};
 };
 
-// Per-CFA-channel noise model in raw code units: sigma(x) = sqrt(S*x + O),
-// matching the Android NOISE_PROFILE / DNG NoiseProfile convention.
+enum class NoiseCoordinate : std::uint8_t {
+    RawCode,
+    NormalizedBlackSubtracted,
+};
+
+// sigma(x) = sqrt(S*x + O). The coordinate is explicit: Android/DNG profiles
+// use normalized, black-subtracted signal, not the legacy RawCode coordinate.
 struct NoiseModel {
     std::array<float, 4> shot{0.0F, 0.0F, 0.0F, 0.0F};
     std::array<float, 4> read{0.0F, 0.0F, 0.0F, 0.0F};
+    NoiseCoordinate coordinate = NoiseCoordinate::RawCode;
 };
 
 // Android-convention lens shading correction map: a rows x columns grid of
@@ -85,6 +92,8 @@ struct DefectPixel {
 
 struct ExposureCalibration {
     float nominalIso = 0.0F;
+    // Relative gain in black-subtracted sensor CODE units. Unknown source
+    // does not establish that this default is a measured physical gain.
     std::array<float, 4> effectiveGain{1.0F, 1.0F, 1.0F, 1.0F};
     float gainUncertainty = 1.0F;
     MetadataSource source = MetadataSource::Unknown;
@@ -96,13 +105,12 @@ struct RawStorage {
     std::vector<std::uint16_t> pixels;
 };
 
-struct RawFrame {
-    std::uint64_t id = 0;
+// Capture observations contain no pixel ownership or backend handle.
+struct RawFrameMetadata {
     std::int64_t sensorTimestampNs = 0;
     std::string cameraId;
     std::string sensorMode;
 
-    RawStorage storage{};
     CfaPattern cfa = CfaPattern::RGGB;
 
     std::int64_t exposureTimeNs = 0;
@@ -125,12 +133,20 @@ struct RawFrame {
     ExposureCalibration exposureCalibration{};
 };
 
+// Owning reference/fixture convenience container. Production can bind the
+// same metadata to borrowed host storage or other physical resources.
+struct RawFrame : RawFrameMetadata {
+    std::uint64_t id = 0;  // Legacy single-frame API; burst boundaries use FrameId.
+    RawStorage storage{};
+};
+
 struct RawValidation {
     bool valid = true;
     std::string message;
 };
 
 [[nodiscard]] CfaChannel cfaChannelAt(CfaPattern pattern, std::uint32_t x, std::uint32_t y) noexcept;
+[[nodiscard]] RawValidation validateRawMetadata(const RawFrameMetadata& metadata);
 [[nodiscard]] RawValidation validateRawFrame(const RawFrame& frame);
 [[nodiscard]] RawValidation validateLensShadingMap(const LensShadingMap& map);
 [[nodiscard]] RawValidation validateNoiseModel(const NoiseModel& model);

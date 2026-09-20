@@ -23,6 +23,7 @@ struct RenderedImageF32 {
 
 struct RenderedFrame {
     std::uint64_t sourceRawId = 0;
+    Lineage lineage{};
     RenderedImageF32 image{};
 
     RenderIntent intent = RenderIntent::SDR;

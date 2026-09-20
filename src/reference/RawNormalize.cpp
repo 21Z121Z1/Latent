@@ -5,84 +5,6 @@
 #include <initializer_list>
 #include <stdexcept>
 
-namespace latent::imaging {
-
-CfaChannel cfaChannelAt(CfaPattern pattern, std::uint32_t x, std::uint32_t y) noexcept {
-    const bool xOdd = (x & 1U) != 0U;
-    const bool yOdd = (y & 1U) != 0U;
-
-    switch (pattern) {
-        case CfaPattern::RGGB:
-            if (!yOdd) return xOdd ? CfaChannel::G0 : CfaChannel::R;
-            return xOdd ? CfaChannel::B : CfaChannel::G1;
-        case CfaPattern::GRBG:
-            if (!yOdd) return xOdd ? CfaChannel::R : CfaChannel::G0;
-            return xOdd ? CfaChannel::G1 : CfaChannel::B;
-        case CfaPattern::GBRG:
-            if (!yOdd) return xOdd ? CfaChannel::B : CfaChannel::G0;
-            return xOdd ? CfaChannel::G1 : CfaChannel::R;
-        case CfaPattern::BGGR:
-            if (!yOdd) return xOdd ? CfaChannel::G0 : CfaChannel::B;
-            return xOdd ? CfaChannel::R : CfaChannel::G1;
-    }
-
-    return CfaChannel::R;
-}
-
-RawValidation validateRawFrame(const RawFrame& frame) {
-    if (frame.storage.extent.width == 0 || frame.storage.extent.height == 0) {
-        return {false, "RAW extent must be non-zero"};
-    }
-    if (frame.storage.rowStridePixels < frame.storage.extent.width) {
-        return {false, "RAW row stride cannot be smaller than width"};
-    }
-    const auto required = static_cast<std::uint64_t>(frame.storage.rowStridePixels) *
-                          static_cast<std::uint64_t>(frame.storage.extent.height);
-    if (frame.storage.pixels.size() < required) {
-        return {false, "RAW storage is smaller than rowStride * height"};
-    }
-    if (frame.exposureTimeNs <= 0) {
-        return {false, "exposure time must be positive"};
-    }
-    if (frame.sensitivityIso <= 0.0F) {
-        return {false, "sensitivity ISO must be positive"};
-    }
-    return {};
-}
-
-RawValidation validateLensShadingMap(const LensShadingMap& map) {
-    if (map.gridColumns == 0 || map.gridRows == 0) {
-        return {false, "lens shading map grid must be non-empty"};
-    }
-    const auto expected = static_cast<std::size_t>(map.gainCount());
-    if (map.gains.size() != expected) {
-        return {false, "lens shading map gain count must equal gridColumns * gridRows * 4"};
-    }
-    for (const auto gain : map.gains) {
-        if (!std::isfinite(gain)) {
-            return {false, "lens shading map gains must be finite"};
-        }
-        if (gain < 1.0F) {
-            return {false, "lens shading map gains must be >= 1.0"};
-        }
-    }
-    return {};
-}
-
-RawValidation validateNoiseModel(const NoiseModel& model) {
-    for (std::size_t c = 0; c < 4; ++c) {
-        if (!std::isfinite(model.shot[c]) || !std::isfinite(model.read[c])) {
-            return {false, "noise model coefficients must be finite"};
-        }
-        if (model.shot[c] < 0.0F || model.read[c] < 0.0F) {
-            return {false, "noise model coefficients must be non-negative"};
-        }
-    }
-    return {};
-}
-
-}  // namespace latent::imaging
-
 namespace latent::reference {
 
 namespace {
@@ -103,11 +25,11 @@ const imaging::MetadataValue<T>* selectByTrust(
     return nullptr;
 }
 
-const imaging::MetadataValue<imaging::BlackLevel>* selectBlackMetadata(const imaging::RawFrame& frame) {
+const imaging::MetadataValue<imaging::BlackLevel>* selectBlackMetadata(const imaging::RawFrameMetadata& frame) {
     return selectByTrust<imaging::BlackLevel>({&frame.opticalBlack, &frame.dynamicBlack, &frame.staticBlack});
 }
 
-const imaging::MetadataValue<float>* selectWhiteMetadata(const imaging::RawFrame& frame) {
+const imaging::MetadataValue<float>* selectWhiteMetadata(const imaging::RawFrameMetadata& frame) {
     return selectByTrust<float>({&frame.dynamicWhite, &frame.staticWhite});
 }
 
@@ -117,7 +39,9 @@ std::size_t channelIndex(imaging::CfaChannel channel) {
 
 }  // namespace
 
-SelectedRawLevels selectRawLevels(const imaging::RawFrame& frame) {
+SelectedRawLevels selectRawLevels(const imaging::RawFrameMetadata& frame) {
+    const auto check = imaging::validateRawMetadata(frame);
+    if (!check.valid) throw std::invalid_argument(check.message);
     const auto* black = selectBlackMetadata(frame);
     const auto* white = selectWhiteMetadata(frame);
     if (black == nullptr || white == nullptr) {
@@ -139,22 +63,26 @@ SelectedRawLevels selectRawLevels(const imaging::RawFrame& frame) {
 }
 
 float normalizeSensorCode(float code, float black, float white) {
-    if (!(white > black)) {
+    if (!std::isfinite(code) || !std::isfinite(black) || !std::isfinite(white) || !(white > black)) {
         throw std::invalid_argument("white must be greater than black");
     }
     return (code - black) / (white - black);
 }
 
 SensorLinearFrameF32 normalizeRaw(const imaging::RawFrame& frame) {
-    const auto validation = imaging::validateRawFrame(frame);
+    return normalizeRaw(runtime::viewRawFrame(frame));
+}
+
+SensorLinearFrameF32 normalizeRaw(const runtime::RawFrameView& frame) {
+    const auto validation = runtime::validateRawView(frame);
     if (!validation.valid) {
         throw std::invalid_argument(validation.message);
     }
 
-    const auto levels = selectRawLevels(frame);
+    const auto levels = selectRawLevels(*frame.metadata);
     SensorLinearFrameF32 result{};
     result.extent = frame.storage.extent;
-    result.cfa = frame.cfa;
+    result.cfa = frame.metadata->cfa;
     result.levels = levels;
     result.samples.resize(static_cast<std::size_t>(result.extent.pixelCount()));
 
@@ -162,7 +90,7 @@ SensorLinearFrameF32 normalizeRaw(const imaging::RawFrame& frame) {
         for (std::uint32_t x = 0; x < result.extent.width; ++x) {
             const auto srcIndex = static_cast<std::size_t>(y) * frame.storage.rowStridePixels + x;
             const auto dstIndex = static_cast<std::size_t>(y) * result.extent.width + x;
-            const auto channel = imaging::cfaChannelAt(frame.cfa, x, y);
+            const auto channel = imaging::cfaChannelAt(frame.metadata->cfa, x, y);
             const auto black = levels.black.cfa[channelIndex(channel)];
             result.samples[dstIndex] = normalizeSensorCode(
                 static_cast<float>(frame.storage.pixels[srcIndex]), black, levels.white);

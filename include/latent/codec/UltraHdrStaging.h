@@ -26,6 +26,7 @@ struct PackedRendition {
 
 struct UltraHdrRenditionPair {
     std::uint64_t sourceRawId = 0;
+    imaging::Lineage lineage{};
     PackedRendition sdr{};
     PackedRendition hdr{};
     float hdrNominalWhiteNits = 203.0F;

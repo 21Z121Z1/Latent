@@ -74,6 +74,9 @@ endif()
 
 set(LATENT_CORE_SOURCES
     src/graph/ImagingIR.cpp
+    src/imaging/RawFrame.cpp
+    src/imaging/RawBurst.cpp
+    src/runtime/RawBindings.cpp
     src/imaging/ColorScience.cpp
     src/imaging/RawPacking.cpp
     src/reference/DngColor.cpp
@@ -120,10 +123,10 @@ endif()
 
 target_compile_features(latent_core PUBLIC cxx_std_20)
 
-# The reference backend must be bit-reproducible across compilers; GNU
-# contracts FP expressions into FMA by default, which shifts last bits.
+# Disable implicit FP contraction in the reference oracle, including Android
+# Clang. Deterministic replay does not imply arbitrary cross-libm bit identity.
 target_compile_options(latent_core PRIVATE
-    $<$<CXX_COMPILER_ID:GNU>:-ffp-contract=off>)
+    $<$<CXX_COMPILER_ID:GNU,Clang,AppleClang>:-ffp-contract=off>)
 
 if(MSVC)
     target_compile_options(latent_core PRIVATE /W4)
@@ -187,7 +190,7 @@ target_include_directories(latent_codec
 )
 target_compile_features(latent_codec PUBLIC cxx_std_20)
 target_compile_options(latent_codec PRIVATE
-    $<$<CXX_COMPILER_ID:GNU>:-ffp-contract=off>)
+    $<$<CXX_COMPILER_ID:GNU,Clang,AppleClang>:-ffp-contract=off>)
 
 if(LATENT_ENABLE_ULTRAHDR)
     target_link_libraries(latent_codec PRIVATE latent_ultrahdr_external)
@@ -215,7 +218,7 @@ if(LATENT_BUILD_TESTS)
         target_compile_definitions(latent_tests PRIVATE LATENT_ENABLE_VULKAN_RUNTIME)
     endif()
     target_compile_options(latent_tests PRIVATE
-        $<$<CXX_COMPILER_ID:GNU>:-ffp-contract=off>)
+        $<$<CXX_COMPILER_ID:GNU,Clang,AppleClang>:-ffp-contract=off>)
     if(MSVC)
         target_compile_options(latent_tests PRIVATE /W4)
         if(LATENT_STRICT_WARNINGS)
@@ -233,7 +236,7 @@ if(LATENT_BUILD_TESTS)
     target_link_libraries(latent_render_tests PRIVATE latent::core)
     target_compile_features(latent_render_tests PRIVATE cxx_std_20)
     target_compile_options(latent_render_tests PRIVATE
-        $<$<CXX_COMPILER_ID:GNU>:-ffp-contract=off>)
+        $<$<CXX_COMPILER_ID:GNU,Clang,AppleClang>:-ffp-contract=off>)
     if(MSVC)
         target_compile_options(latent_render_tests PRIVATE /W4)
         if(LATENT_STRICT_WARNINGS)
@@ -252,7 +255,7 @@ if(LATENT_BUILD_TESTS)
     target_link_libraries(latent_codec_tests PRIVATE latent::codec)
     target_compile_features(latent_codec_tests PRIVATE cxx_std_20)
     target_compile_options(latent_codec_tests PRIVATE
-        $<$<CXX_COMPILER_ID:GNU>:-ffp-contract=off>)
+        $<$<CXX_COMPILER_ID:GNU,Clang,AppleClang>:-ffp-contract=off>)
     if(MSVC)
         target_compile_options(latent_codec_tests PRIVATE /W4)
         if(LATENT_STRICT_WARNINGS)
@@ -273,7 +276,7 @@ if(LATENT_BUILD_TESTS)
         target_link_libraries(latent_compute_runner_lifetime_tests PRIVATE latent::core)
         target_compile_features(latent_compute_runner_lifetime_tests PRIVATE cxx_std_20)
         target_compile_options(latent_compute_runner_lifetime_tests PRIVATE
-            $<$<CXX_COMPILER_ID:GNU>:-ffp-contract=off>)
+            $<$<CXX_COMPILER_ID:GNU,Clang,AppleClang>:-ffp-contract=off>)
         if(MSVC)
             target_compile_options(latent_compute_runner_lifetime_tests PRIVATE /W4)
             if(LATENT_STRICT_WARNINGS)
@@ -289,4 +292,18 @@ if(LATENT_BUILD_TESTS)
         add_test(NAME latent_compute_runner_lifetime_tests
             COMMAND latent_compute_runner_lifetime_tests)
     endif()
+endif()
+
+if(LATENT_BUILD_TESTS)
+    add_executable(latent_temporal_contract_tests tests/test_temporal_contract.cpp)
+    target_link_libraries(latent_temporal_contract_tests PRIVATE latent_core latent_codec)
+    if(MSVC)
+        target_compile_options(latent_temporal_contract_tests PRIVATE /W4)
+    else()
+        target_compile_options(latent_temporal_contract_tests PRIVATE -Wall -Wextra -Wpedantic -Wconversion -Wshadow -ffp-contract=off)
+        if(LATENT_STRICT_WARNINGS)
+            target_compile_options(latent_temporal_contract_tests PRIVATE -Werror)
+        endif()
+    endif()
+    add_test(NAME latent_temporal_contract_tests COMMAND latent_temporal_contract_tests)
 endif()

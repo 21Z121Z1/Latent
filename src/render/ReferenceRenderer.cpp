@@ -214,6 +214,7 @@ imaging::RenderedFrame renderReference(
 
     imaging::RenderedFrame rendered{};
     rendered.sourceRawId = scene.sourceRawId;
+    rendered.lineage = scene.lineage;
     rendered.intent = config.intent;
     rendered.primaries = config.intent == imaging::RenderIntent::SDR
                              ? imaging::Primaries::SRGBRec709
