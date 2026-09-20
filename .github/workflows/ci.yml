@@ -11,22 +11,36 @@ permissions:
 jobs:
   linux:
     runs-on: ubuntu-24.04
+    env:
+      LATENT_REQUIRE_VULKAN: '1'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
       - name: Install native dependencies
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq libjpeg-dev
-          if ! sudo apt-get install -y -qq libvulkan1 mesa-vulkan-drivers; then
-            echo "lavapipe installation failed; runtime smoke tests will skip gracefully"
-          fi
-          ls -la /usr/share/vulkan/icd.d/ || true
+          sudo apt-get install -y -qq libjpeg-dev libvulkan1 mesa-vulkan-drivers vulkan-tools spirv-tools
+          icd=$(find /usr/share/vulkan/icd.d -name 'lvp_icd*.json' -print -quit)
+          test -n "$icd"
+          echo "VK_ICD_FILENAMES=$icd" >> "$GITHUB_ENV"
+          echo "XDG_RUNTIME_DIR=$RUNNER_TEMP" >> "$GITHUB_ENV"
+      - name: Require software Vulkan device
+        run: vulkaninfo --summary
       - name: Configure
         run: cmake -S . -B build -DLATENT_BUILD_TESTS=ON -DLATENT_STRICT_WARNINGS=ON
       - name: Build
         run: cmake --build build --parallel
       - name: Test
-        run: ctest --test-dir build --output-on-failure --verbose
+        run: |
+          set -o pipefail
+          ctest --test-dir build --output-on-failure --verbose | tee build/ctest.log
+          if grep -Ei 'skip(ped|ping)?[^a-z].*vulkan|vulkan.*skip(ped|ping)?[^a-z]' build/ctest.log; then
+            echo 'Vulkan execution is mandatory in this job' >&2
+            exit 1
+          fi
 
       - name: Configure (no Vulkan runtime)
         run: cmake -S . -B build-novk -DLATENT_BUILD_TESTS=ON -DLATENT_ENABLE_VULKAN_RUNTIME=OFF
@@ -67,3 +81,19 @@ jobs:
         run: |
           export LD_LIBRARY_PATH="$RUNNER_TEMP/uhdr-install/lib:${LD_LIBRARY_PATH:-}"
           ctest --test-dir build-uhdr --output-on-failure --verbose
+      - name: Prepare offline reproduction inputs
+        if: always()
+        run: bash tools/ci/reproduction-inputs.sh build "$RUNNER_TEMP/latent-reproduction"
+      - name: Upload native evidence and reproduction inputs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: native-evidence-${{ github.event.pull_request.head.sha || github.sha }}
+          retention-days: 7
+          if-no-files-found: error
+          path: |
+            ${{ runner.temp }}/latent-reproduction/
+            build/Testing/Temporary/LastTest.log
+            build/ctest.log
+            build-novk/Testing/Temporary/LastTest.log
+            build-uhdr/Testing/Temporary/LastTest.log
