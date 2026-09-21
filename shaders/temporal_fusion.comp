@@ -1,0 +1,90 @@
+#version 450
+// One invocation owns one accumulator. Only integer region counters are atomic.
+// Four storage bindings work with the Vulkan 1.1 minimum binding limit.
+layout(local_size_x = 128) in;
+layout(std430, binding = 0) readonly buffer Reference { vec4 ref[]; } referenceImage;
+layout(std430, binding = 1) readonly buffer Source { vec4 src[]; } sourceImage;
+layout(std430, binding = 2) buffer Accumulation { float values[]; } accumulation;
+// Ten words/tile: dx, dy, confidence, residual (float bits), six uint counters.
+layout(std430, binding = 3) buffer Regions { uint words[]; } regions;
+layout(push_constant) uniform Params {
+    uint width, height, tileSize, columns;
+    uint isReference;
+    float varianceFloor, cutoffSigma, minimumConfidence, radiometricConfidence;
+    uint basePixel;
+} p;
+
+bool finiteFloat(float v) { return !isnan(v) && !isinf(v); }
+
+bool sampleCfa(uint x, uint y, float dx, float dy, out vec4 result) {
+    uint px = x & 1u, py = y & 1u;
+    precise float fx = (float(x - px) + dx) * 0.5;
+    precise float fy = (float(y - py) + dy) * 0.5;
+    float maxX = float((p.width - 1u - px) / 2u);
+    float maxY = float((p.height - 1u - py) / 2u);
+    if (fx < 0.0 || fy < 0.0 || fx > maxX || fy > maxY) return false;
+    uint ix = uint(fx), iy = uint(fy);
+    precise float tx = fx - float(ix), ty = fy - float(iy);
+    result = vec4(0.0, 0.0, 1.0, 1.0);
+    for (uint j = 0u; j < 2u; ++j) for (uint i = 0u; i < 2u; ++i) {
+        precise float weight = (i == 0u ? 1.0 - tx : tx) * (j == 0u ? 1.0 - ty : ty);
+        if (weight == 0.0) continue;
+        uint sx = (ix + i) * 2u + px, sy = (iy + j) * 2u + py;
+        vec4 s = sourceImage.src[sy * p.width + sx];
+        precise float value = result.x + weight * s.x;
+        precise float variance = result.y + weight * weight * s.y;
+        result.xy = vec2(value, variance);
+        result.z = min(result.z, s.z);
+        if (s.z == 0.0) result.w = s.w;
+    }
+    return true;
+}
+void main() {
+    uint id = p.basePixel + gl_GlobalInvocationID.x;
+    if (id >= p.width * p.height) return;
+    uint x = id % p.width, y = id / p.width;
+    uint tile = (y / p.tileSize) * p.columns + x / p.tileSize;
+    uint t = tile * 10u;
+    precise float confidence = p.isReference != 0u ? 1.0 :
+        uintBitsToFloat(regions.words[t + 2u]) * p.radiometricConfidence;
+    vec4 r = referenceImage.ref[id], s;
+    uint reason = 5u; // 0..4 rejection, 5 accepted.
+    precise float robust = 0.0, weight = 0.0;
+    bool inside = true;
+    if (p.isReference != 0u) s = sourceImage.src[id];
+    else inside = sampleCfa(x, y, uintBitsToFloat(regions.words[t]),
+                           uintBitsToFloat(regions.words[t + 1u]), s);
+    if (!inside) { reason = 0u; confidence = 0.0; }
+    else if (!finiteFloat(s.x) || !finiteFloat(s.y) || s.y < 0.0 || !finiteFloat(confidence)) reason = 4u;
+    else if (s.z == 0.0) reason = s.w == 4.0 ? 4u : 1u;
+    else if (p.isReference == 0u && confidence < p.minimumConfidence) reason = 2u;
+    else {
+        robust = 1.0;
+        if (p.isReference == 0u && r.z != 0.0) {
+            precise float delta = s.x - r.x;
+            precise float z2 = delta * delta / (s.y + r.y + p.varianceFloor);
+            precise float u = z2 / (p.cutoffSigma * p.cutoffSigma);
+            if (u >= 1.0) { reason = 3u; robust = 0.0; }
+            else robust = (1.0 - u) * (1.0 - u);
+        }
+        if (reason == 5u) {
+            weight = (r.y + p.varianceFloor) / (s.y + p.varianceFloor) * confidence * robust;
+            if (!finiteFloat(weight) || weight <= 0.0) { reason = 4u; robust = 0.0; }
+        }
+    }
+    uint a = id * 8u;
+    accumulation.values[a + 6u] += 1.0;
+    accumulation.values[a + 4u] += clamp(confidence, 0.0, 1.0);
+    accumulation.values[a + 5u] += robust;
+    if (reason == 5u) {
+        precise float v = accumulation.values[a] + weight * s.x;
+        precise float w = accumulation.values[a + 1u] + weight;
+        precise float w2 = accumulation.values[a + 2u] + weight * weight;
+        precise float variance = accumulation.values[a + 3u] + weight * weight * s.y;
+        accumulation.values[a] = v;
+        accumulation.values[a + 1u] = w;
+        accumulation.values[a + 2u] = w2;
+        accumulation.values[a + 3u] = variance;
+    }
+    atomicAdd(regions.words[t + 4u + reason], 1u);
+}

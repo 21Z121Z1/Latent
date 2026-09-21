@@ -22,7 +22,7 @@ jobs:
       - name: Install native dependencies
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq libjpeg-dev libvulkan1 mesa-vulkan-drivers vulkan-tools spirv-tools
+          sudo apt-get install -y -qq libjpeg-dev libvulkan1 mesa-vulkan-drivers vulkan-tools spirv-tools vulkan-validationlayers
           icd=$(find /usr/share/vulkan/icd.d -name 'lvp_icd*.json' -print -quit)
           test -n "$icd"
           echo "VK_ICD_FILENAMES=$icd" >> "$GITHUB_ENV"
@@ -33,11 +33,20 @@ jobs:
         run: cmake -S . -B build -DLATENT_BUILD_TESTS=ON -DLATENT_STRICT_WARNINGS=ON
       - name: Build
         run: cmake --build build --parallel
+      - name: Validate SPIR-V against Vulkan 1.1
+        run: |
+          for shader in shaders/*.comp; do
+            output="build/$(basename "$shader").spv"
+            build/_deps/glslang-build/StandAlone/glslang -V --target-env vulkan1.1 -o "$output" "$shader"
+            spirv-val --target-env vulkan1.1 "$output"
+          done
       - name: Test
+        env:
+          VK_INSTANCE_LAYERS: VK_LAYER_KHRONOS_validation
         run: |
           set -o pipefail
           ctest --test-dir build --output-on-failure --verbose | tee build/ctest.log
-          if grep -Ei 'skip(ped|ping)?[^a-z].*vulkan|vulkan.*skip(ped|ping)?[^a-z]' build/ctest.log; then
+          if grep -Ei 'skip(ped|ping)?[^a-z].*vulkan|vulkan.*skip(ped|ping)?[^a-z]|Validation Error|VUID-|SYNC-HAZARD' build/ctest.log; then
             echo 'Vulkan execution is mandatory in this job' >&2
             exit 1
           fi
@@ -97,3 +106,30 @@ jobs:
             build/ctest.log
             build-novk/Testing/Temporary/LastTest.log
             build-uhdr/Testing/Temporary/LastTest.log
+
+  sanitizer:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Strict Clang ASan and UBSan
+        env:
+          CC: clang
+          CXX: clang++
+          ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+        run: |
+          cmake -S . -B build-san -DLATENT_ENABLE_VULKAN_RUNTIME=OFF \
+            -DLATENT_STRICT_WARNINGS=ON -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer" \
+            -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"
+          cmake --build build-san --parallel
+          ctest --test-dir build-san --output-on-failure --verbose
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: sanitizer-${{ github.event.pull_request.head.sha || github.sha }}
+          if-no-files-found: error
+          path: build-san/Testing/Temporary/LastTest.log

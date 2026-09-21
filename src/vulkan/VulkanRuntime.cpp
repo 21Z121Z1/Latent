@@ -12,6 +12,7 @@ namespace {
 
 struct RuntimeState {
     bool initialized = false;
+    bool loaderAvailable = false;
     VkInstance instance = VK_NULL_HANDLE;
     VkPhysicalDevice physicalDevice = VK_NULL_HANDLE;
     VkDevice device = VK_NULL_HANDLE;
@@ -65,7 +66,7 @@ RuntimeAvailability VulkanRuntime::tryInitialize() {
     RuntimeAvailability availability{};
     auto& runtime = state();
     if (runtime.initialized) {
-        availability.loaderAvailable = true;
+        availability.loaderAvailable = runtime.loaderAvailable;
         availability.instanceCreated = runtime.instance != VK_NULL_HANDLE;
         availability.deviceCreated = runtime.device != VK_NULL_HANDLE;
         if (runtime.instance == VK_NULL_HANDLE || runtime.device == VK_NULL_HANDLE) {
@@ -74,12 +75,15 @@ RuntimeAvailability VulkanRuntime::tryInitialize() {
         return availability;
     }
 
+    // Cache failed probes too. Repeated probes must not leak a partial instance.
+    runtime.initialized = true;
     if (volkInitialize() != VK_SUCCESS) {
         runtime.detail = "Vulkan loader (libvulkan) is unavailable";
         availability.detail = runtime.detail;
         return availability;
     }
     availability.loaderAvailable = true;
+    runtime.loaderAvailable = true;
 
     // Portability drivers (MoltenVK on macOS) are only enumerated when the
     // application opts in; the extension simply does not exist elsewhere.
@@ -151,6 +155,9 @@ RuntimeAvailability VulkanRuntime::tryInitialize() {
     vkEnumeratePhysicalDevices(runtime.instance, &deviceCount, devices.data());
 
     for (const auto candidate : devices) {
+        VkPhysicalDeviceProperties candidateProperties{};
+        vkGetPhysicalDeviceProperties(candidate, &candidateProperties);
+        if (candidateProperties.apiVersion < VK_API_VERSION_1_1) continue;
         if (findComputeQueueFamily(candidate) != VK_QUEUE_FAMILY_IGNORED) {
             runtime.physicalDevice = candidate;
             break;
@@ -171,21 +178,16 @@ RuntimeAvailability VulkanRuntime::tryInitialize() {
     properties.pNext = &subgroupProperties;
     vkGetPhysicalDeviceProperties2(runtime.physicalDevice, &properties);
 
-    VkPhysicalDeviceVulkan11Features features11;
-    features11.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES;
-    features11.pNext = nullptr;
-    VkPhysicalDeviceVulkan12Features features12;
+    // Query only feature structures legal for this physical-device API version.
+    // Optional capabilities remain observations; this FP32 lowering uses none.
+    VkPhysicalDeviceVulkan12Features features12{};
     features12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
-    features12.pNext = nullptr;
-    features11.pNext = &features12;
-    VkPhysicalDeviceVulkan13Features features13;
+    VkPhysicalDeviceVulkan13Features features13{};
     features13.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
-    features13.pNext = nullptr;
-    features12.pNext = &features13;
-    VkPhysicalDeviceFeatures2 features;
+    VkPhysicalDeviceFeatures2 features{};
     features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
-    features.pNext = &features11;
-    std::memset(&features.features, 0, sizeof(features.features));
+    if (properties.properties.apiVersion >= VK_API_VERSION_1_2) features.pNext = &features12;
+    if (properties.properties.apiVersion >= VK_API_VERSION_1_3) features12.pNext = &features13;
     vkGetPhysicalDeviceFeatures2(runtime.physicalDevice, &features);
 
     std::uint32_t extensionCount = 0U;
@@ -316,6 +318,7 @@ void VulkanRuntime::shutdown() {
     runtime.caps = DeviceCaps{};
     runtime.detail.clear();
     runtime.initialized = false;
+    runtime.loaderAvailable = false;
     volkFinalize();
 }
 

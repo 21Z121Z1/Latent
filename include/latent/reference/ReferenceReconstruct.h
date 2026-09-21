@@ -44,4 +44,10 @@ struct ReconstructionConfig {
     const imaging::RawFrame& raw,
     const ReconstructionConfig& config);
 
+// Finish an already normalized/corrected FP32 CFA image without quantization.
+// No affine noise model is inferred for fused data. The caller owns its lineage
+// and conditional variance. Sensor correction flags must be disabled here.
+[[nodiscard]] imaging::SceneFrame reconstructSensorLinear(
+    const SensorLinearFrameF32& sensor, const ReconstructionConfig& config);
+
 }  // namespace latent::reference

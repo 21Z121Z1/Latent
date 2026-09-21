@@ -32,18 +32,30 @@ if(LATENT_ENABLE_VULKAN_RUNTIME)
         FORCE)
     FetchContent_MakeAvailable(volk)
 
-    # Build-time SPIR-V compilation. ENABLE_OPT=OFF drops the SPIRV-Tools
-    # dependency; our per-target warning flags never reach glslang sources.
-    set(ENABLE_OPT OFF CACHE BOOL "" FORCE)
-    set(ENABLE_HLSL OFF CACHE BOOL "" FORCE)
-    set(ENABLE_GLSLANG_BINARIES ON CACHE BOOL "" FORCE)
-    set(SKIP_GLSLANG_INSTALL ON CACHE BOOL "" FORCE)
-    FetchContent_Declare(glslang
-        GIT_SHALLOW TRUE
-        GIT_REPOSITORY https://github.com/KhronosGroup/glslang.git
-        GIT_TAG 16.5.0
-    )
-    FetchContent_MakeAvailable(glslang)
+    set(LATENT_HOST_GLSLANG "" CACHE FILEPATH "Host glslang executable for Android/cross builds")
+    if(LATENT_HOST_GLSLANG)
+        if(NOT EXISTS "${LATENT_HOST_GLSLANG}")
+            message(FATAL_ERROR "LATENT_HOST_GLSLANG must name an existing host executable")
+        endif()
+        add_executable(glslang-standalone IMPORTED GLOBAL)
+        set_target_properties(glslang-standalone PROPERTIES IMPORTED_LOCATION "${LATENT_HOST_GLSLANG}")
+    else()
+        if(CMAKE_CROSSCOMPILING)
+            message(FATAL_ERROR "Cross builds require LATENT_HOST_GLSLANG; never execute target binaries at build time")
+        endif()
+        # Build-time SPIR-V compilation. ENABLE_OPT=OFF drops the SPIRV-Tools
+        # dependency; our per-target warning flags never reach glslang sources.
+        set(ENABLE_OPT OFF CACHE BOOL "" FORCE)
+        set(ENABLE_HLSL OFF CACHE BOOL "" FORCE)
+        set(ENABLE_GLSLANG_BINARIES ON CACHE BOOL "" FORCE)
+        set(SKIP_GLSLANG_INSTALL ON CACHE BOOL "" FORCE)
+        FetchContent_Declare(glslang
+            GIT_SHALLOW TRUE
+            GIT_REPOSITORY https://github.com/KhronosGroup/glslang.git
+            GIT_TAG 16.5.0
+        )
+        FetchContent_MakeAvailable(glslang)
+    endif()
 
     set(GENERATED_SHADER_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated_shaders")
     file(MAKE_DIRECTORY "${GENERATED_SHADER_DIR}")
@@ -307,3 +319,5 @@ if(LATENT_BUILD_TESTS)
     endif()
     add_test(NAME latent_temporal_contract_tests COMMAND latent_temporal_contract_tests)
 endif()
+
+include(cmake/Temporal.cmake)
