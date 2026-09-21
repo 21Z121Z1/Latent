@@ -4,3 +4,9 @@ CMakeUserPresets.json
 compile_commands.json
 *.swp
 .DS_Store
+/android/.gradle/
+/android/.kotlin/
+/android/local.properties
+/android/app/.cxx/
+/android/app/build/
+/android/build/
