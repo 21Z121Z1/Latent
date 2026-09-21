@@ -68,6 +68,23 @@ std::vector<imaging::DefectPixel> collectDefects(
     return defects;
 }
 
+imaging::Matrix3f cameraToSceneMatrix(const ReconstructionConfig& config) {
+    imaging::Matrix3f cameraToScene = imaging::Matrix3f::identity();
+    if (config.colorPath == ColorPath::DngProfile) {
+        const auto profileCheck = validateDngProfile(config.dngProfile);
+        if (!profileCheck.valid) {
+            throw std::invalid_argument(profileCheck.message);
+        }
+        const auto cameraToXyzD50 =
+            cameraToXyzD50Matrix(config.whiteBalanceXy, config.dngProfile);
+        cameraToScene = xyzD50ToAcescgMatrix().multiplied(cameraToXyzD50.matrix);
+    } else {
+        cameraToScene = config.cameraToAcescg;
+    }
+
+    return cameraToScene;
+}
+
 }  // namespace
 
 imaging::SceneFrame reconstructSingleRaw(
@@ -103,25 +120,46 @@ imaging::SceneFrame reconstructSingleRaw(
         lensShadingApplied = true;
     }
 
-    imaging::Matrix3f cameraToScene = imaging::Matrix3f::identity();
-    if (config.colorPath == ColorPath::DngProfile) {
-        const auto profileCheck = validateDngProfile(config.dngProfile);
-        if (!profileCheck.valid) {
-            throw std::invalid_argument(profileCheck.message);
-        }
-        const auto cameraToXyzD50 =
-            cameraToXyzD50Matrix(config.whiteBalanceXy, config.dngProfile);
-        cameraToScene = xyzD50ToAcescgMatrix().multiplied(cameraToXyzD50.matrix);
-    } else {
-        cameraToScene = config.cameraToAcescg;
-    }
-
-    const auto rgb = demosaicSensorLinear(
-        working, config.whiteBalanceGains, config.demosaicMethod);
-
-    imaging::SceneFrame scene{};
+    auto finishConfig = config;
+    finishConfig.applyLensShading = false;
+    finishConfig.defectCorrection = DefectCorrectionMode::Disabled;
+    auto scene = reconstructSensorLinear(working, finishConfig);
     scene.sourceRawId = raw.id;
     scene.lineage = imaging::singleFrameLineage(imaging::FrameId{raw.id});
+
+    if (config.propagateNoise && normalizedNoise.has_value()) {
+        scene.propagatedNoise = buildPropagatedNoise(
+            sensor,
+            *normalizedNoise,
+            config.whiteBalanceGains,
+            lensShadingApplied,
+            lensShadingApplied ? &*raw.lensShading.value : nullptr,
+            cameraToSceneMatrix(config),
+            std::exp2(config.sceneScaleEV),
+            config.demosaicMethod);
+    }
+
+    return scene;
+}
+
+imaging::SceneFrame reconstructSensorLinear(
+    const SensorLinearFrameF32& sensor, const ReconstructionConfig& config) {
+    validateConfig(config);
+    if (config.applyLensShading || config.defectCorrection != DefectCorrectionMode::Disabled) {
+        throw std::invalid_argument("sensor finishing does not apply sensor corrections twice");
+    }
+    if (sensor.extent.width < 2U || sensor.extent.height < 2U ||
+        sensor.samples.size() != sensor.extent.pixelCount()) {
+        throw std::invalid_argument("invalid sensor-linear payload");
+    }
+    for (float v : sensor.samples) {
+        if (!std::isfinite(v)) throw std::invalid_argument("non-finite sensor-linear sample");
+    }
+    const auto cameraToScene = cameraToSceneMatrix(config);
+    const auto rgb = demosaicSensorLinear(
+        sensor, config.whiteBalanceGains, config.demosaicMethod);
+
+    imaging::SceneFrame scene{};
     scene.image.extent = rgb.extent;
     scene.image.rgb.resize(static_cast<std::size_t>(rgb.extent.pixelCount()) * 3U);
     scene.sceneScaleEV = config.sceneScaleEV;
@@ -137,18 +175,6 @@ imaging::SceneFrame reconstructSingleRaw(
         scene.image.rgb[i] = sceneRgb[0] * sceneScale;
         scene.image.rgb[i + 1U] = sceneRgb[1] * sceneScale;
         scene.image.rgb[i + 2U] = sceneRgb[2] * sceneScale;
-    }
-
-    if (config.propagateNoise && normalizedNoise.has_value()) {
-        scene.propagatedNoise = buildPropagatedNoise(
-            sensor,
-            *normalizedNoise,
-            config.whiteBalanceGains,
-            lensShadingApplied,
-            lensShadingApplied ? &*raw.lensShading.value : nullptr,
-            cameraToScene,
-            sceneScale,
-            config.demosaicMethod);
     }
 
     return scene;

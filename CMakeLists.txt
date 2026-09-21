@@ -77,12 +77,15 @@ set(LATENT_CORE_SOURCES
     src/imaging/RawFrame.cpp
     src/imaging/RawBurst.cpp
     src/runtime/RawBindings.cpp
+    src/runtime/TemporalPipeline.cpp
     src/imaging/ColorScience.cpp
     src/imaging/RawPacking.cpp
     src/reference/DngColor.cpp
     src/reference/Demosaic.cpp
     src/reference/NoisePropagation.cpp
     src/reference/RawNormalize.cpp
+    src/reference/TemporalReconstruct.cpp
+    src/reference/TemporalAlignment.cpp
     src/reference/ReferenceReconstruct.cpp
     src/reference/SensorLinearOps.cpp
     src/render/AcesToneScale.cpp
@@ -306,4 +309,16 @@ if(LATENT_BUILD_TESTS)
         endif()
     endif()
     add_test(NAME latent_temporal_contract_tests COMMAND latent_temporal_contract_tests)
+endif()
+
+if(LATENT_BUILD_TESTS)
+    add_executable(latent_temporal_tests tests/test_temporal.cpp)
+    target_link_libraries(latent_temporal_tests PRIVATE latent::core)
+    if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        target_compile_options(latent_temporal_tests PRIVATE -ffp-contract=off)
+        if(LATENT_STRICT_WARNINGS)
+            target_compile_options(latent_temporal_tests PRIVATE -Wall -Wextra -Wpedantic -Wconversion -Wshadow -Werror)
+        endif()
+    endif()
+    add_test(NAME latent_temporal_tests COMMAND latent_temporal_tests)
 endif()
