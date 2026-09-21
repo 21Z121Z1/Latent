@@ -16,9 +16,17 @@ jobs:
           persist-credentials: false
       - name: Select JDK and fixed Android toolchain
         run: |
-          echo "JAVA_HOME=$JAVA_HOME_17_X64" >> "$GITHUB_ENV"
-          echo "$JAVA_HOME_17_X64/bin" >> "$GITHUB_PATH"
-          # Hosted runner images already carry Android SDK license acceptance.
+          mkdir -p build-host
+          export JAVA_HOME="$JAVA_HOME_17_X64"
+          tools="$ANDROID_HOME/cmdline-tools/latest/bin"
+          if [ ! -x "$tools/sdkmanager" ]; then tools="$ANDROID_HOME/cmdline-tools/12.0/bin"; fi
+          test -x "$tools/sdkmanager"
+          export PATH="$JAVA_HOME/bin:$tools:$PATH"
+          echo "JAVA_HOME=$JAVA_HOME" >> "$GITHUB_ENV"
+          printf '%s\n' "$JAVA_HOME/bin" "$tools" >> "$GITHUB_PATH"
+          java -version 2>&1 | tee build-host/android-toolchain.log
+          sdkmanager --version | tee -a build-host/android-toolchain.log
+          # Use the licenses already accepted in the hosted runner image.
           # Do not accept a new agreement on behalf of the repository owner.
           sdkmanager 'platforms;android-36' 'build-tools;35.0.0' 'ndk;27.2.12479018' 'cmake;3.22.1' </dev/null
       - name: Build pinned host shader compiler
@@ -49,6 +57,7 @@ jobs:
             android/app/build/test-results/
             android/app/build/outputs/androidTest-results/
             android/app/.cxx/**/logs/
+            build-host/android-toolchain.log
             build-host/android-emulator.log
             build-host/android-logcat.log
             build-host/android-screenshot.png
