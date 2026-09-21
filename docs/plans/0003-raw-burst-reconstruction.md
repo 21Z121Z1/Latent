@@ -1,63 +1,71 @@
 # Plan 0003: Temporal RAW reconstruction and Android capture
 
 Status: Active
-Related: ADR-0001 through ADR-0004; Plans 0001 and 0002
-Current step: Implement deterministic temporal reference stages after the contract slice.
+Related: ADR-0001 through ADR-0005; Plans 0001 and 0002
+Current step: Verify Vulkan lowering in Actions; implement Android integration.
 
 ## Scope and authority
 
-Implement one clean-room temporal RAW semantic path. Retain the deterministic
-C++ reference and the existing Vulkan backend. Do not create a second backend
-solely to add Rust. Kotlin and Compose own Android UI and Camera2 integration.
+Implement one clean-room temporal RAW path. Keep the deterministic C++ oracle
+and existing Vulkan backend. Kotlin and Compose own Android UI and Camera2.
+Do not create a second backend solely to add Rust.
 
-The necessary P0 slice is typed burst identity, multi-source lineage, canonical
-temporal operations, separate physical bindings, and a versioned temporal
-execution plan and trace. This work does not claim to finish Plans 0001 or 0002.
+This work adds the required P0 slice: typed burst identity, multi-source lineage,
+physical bindings, canonical temporal stages, and a versioned plan and trace.
+It does not complete the general graph compiler or Plans 0001 and 0002.
 
-## Incremental work
+## Implemented increments
 
-1. Verify baseline and establish reproducible build inputs.
-2. Define the burst contract, lineage, authority-separated inputs, and ADR-0005.
-3. Implement deterministic fixtures, selection, radiometry, and alignment.
-4. Implement CFA-safe robust fusion, conditional uncertainty, and reconstruction.
-5. Prove synthetic properties before adding Vulkan lowerings and differential tests.
-6. Build the Android app, native replay, Camera2 capture, and transactional output.
-7. Run applicable CI gates on the latest head and review the complete diff.
+- Start from main `28535ff41ead853a219ad4003a1300a7dbf6ac07`.
+- Commit `75a25cb02d9e25379a755b53b5037faa41b9b87e` implements deterministic
+  selection, gain-aware radiometry, multiscale/local registration, same-parity
+  CFA sampling, Tukey fusion, conditional uncertainty, and scene reconstruction.
+- The Vulkan increment lowers sampling, weights, persistent accumulation, and
+  regional support to FP32 compute. Normalization and registration remain CPU
+  stages. No FP16 arithmetic or storage is used. The executor reuses one source
+  buffer. It reads small regional counters per frame and final accumulators once.
+- A host shader compiler is required for cross builds. Target binaries are never
+  executed as build tools. Native CI adds SPIR-V validation and sanitizers.
 
-## Acceptance
+## Remaining acceptance work
 
-Reference gates cover validation, lineage, N=1 equivalence, all Bayer layouts,
-odd borders, sub-black values, radiometric scale and variance, translations,
-local motion, clipping, deterministic replay, and Monte Carlo calibration.
-Vulkan gates require real software-driver dispatch, explicit error budgets,
-finite/sign preservation, and repeated execution. Android gates require build,
-lint, unit tests, native loading, fixture reconstruction, and UI integration.
-No camera or performance claim may be inferred from emulator or lavapipe tests.
+1. Run real Vulkan differential, validation-layer, and lifetime tests in Actions.
+2. Extend reference quality/calibration and bounded-working-set experiments.
+3. Add the Android app, native replay, capture policy, Camera2, and MediaStore.
+4. Prove Android assembly, lint, unit tests, native loading, and fixture UI flow.
+5. Record host/software-driver benchmarks and review the complete final diff.
+
+Reference gates cover validation, lineage, N=1 image equivalence, all Bayer
+layouts, odd borders, sub-black, radiometric variance scaling, translations,
+motion rejection, clipping, replay, and Monte Carlo calibration. Fixed-weight
+variance evidence does not establish unconditional calibration of adaptive
+weights. The current high-frequency fractional-motion fixture fails closed at
+low registration confidence; its displacement gate alone is not a quality claim.
 
 ## Verification ledger
 
-| Requirement | Environment | Evidence | Status | Source |
+| Requirement | Environment | Evidence | Status | Latest SHA |
 | --- | --- | --- | --- | --- |
-| Unchanged default strict build/tests | GitHub Ubuntu 24.04, GCC 13.3, Mesa | Run 33457999246, job 106054161632, 4/4 CTest; full log inspected | VERIFIED | 1939cb424deef1272602d2b565bd3ee3c6349f51 |
-| Unchanged no-Vulkan build/tests | Same GitHub runner | Same job, 3/3 CTest | VERIFIED | Same baseline |
-| Isolated libultrahdr integration | Same GitHub runner, libultrahdr 2.0.2 | Same job, 3/3 CTest | VERIFIED | Same baseline |
-| Typed burst, borrowed normalization, lineage, noise units | Editing container, strict no-Vulkan build | 4/4 CTest, including temporal contract tests; CI pending | PARTIALLY VERIFIED | Contract increment |
-| Temporal algorithms and Vulkan | Not implemented yet | No evidence yet | UNVERIFIED | Not applicable |
-| Android integration | Not implemented yet | No evidence yet | UNVERIFIED | Not applicable |
-| Real RAW capture, metadata, IMU, OEM behavior | Physical Android device required | No device connected | UNVERIFIED | Not applicable |
-| Mobile latency, thermals, energy, memory traffic | Physical Android device required | No device connected | UNVERIFIED | Not applicable |
+| Fresh unchanged baseline | GitHub Ubuntu 24.04, GCC 13.3, lavapipe | Run 35520430992, job 106210609008; native 5/5, no-Vulkan 4/4, Ultra HDR 4/4; complete log inspected | VERIFIED | 28535ff41ead853a219ad4003a1300a7dbf6ac07 |
+| CPU temporal properties and regressions | GitHub Ubuntu 24.04 | Run 35561432556, job 106214904806; native 6/6, no-Vulkan 5/5, Ultra HDR 5/5; complete log inspected | VERIFIED | 75a25cb02d9e25379a755b53b5037faa41b9b87e |
+| Vulkan increment compilation | Editing container, GCC strict | All shader/C++ targets build; native CTest 7/7 but Vulkan execution visibly skips without ICD | PARTIALLY VERIFIED | Current Vulkan increment |
+| ASan, UBSan, leaks | Editing container, Clang | All 5 no-Vulkan CTest groups pass with halt-on-error and leak detection | VERIFIED | Current Vulkan increment |
+| Temporal Vulkan dispatch/differential/lifetime | Actions required | Tests added; no execution evidence yet | UNVERIFIED | Current Vulkan increment |
+| Android integration | Not implemented yet | No evidence | UNVERIFIED | Not applicable |
+| Real RAW, metadata, IMU, OEM, external import | Physical Android device | No device connected | UNVERIFIED | Not applicable |
+| Mobile latency, thermals, energy, memory traffic | Physical Android device | No device connected | UNVERIFIED | Not applicable |
 
-## Current constraints and clean-room record
+## Environment and clean-room record
 
 The editing container cannot resolve GitHub and has no Android SDK or Vulkan
-ICD. The GitHub connector supports writes and Actions executes native builds.
-CI reproduction artifacts contain source archives and Git objects, not local
-Git configuration or credentials. The first artifact was downloaded, its SHA-256
-and internal checksums were verified, and the unchanged main no-Vulkan baseline
-passed 3/3 CTest in the editing container. The first branch CI also passed all
-existing gates with a required lavapipe probe. Native temporal gates are next.
+ICD. The connector supports repository writes and Actions. Reproduction artifacts
+supply pinned sources and Git bundles. Artifact digests and internal checksums
+are verified. The committed CPU tree equals the locally tested tree.
 
-The uploaded archive was inspected only at the directory-list level. Its private
-reverse-engineering, disassembly, model, and tuning content is excluded from
-algorithm specifications and implementation. Public papers/specifications and
-independently generated experiments are the permitted algorithm evidence.
+The earlier contract iteration reported directory-only inspection of the uploaded
+archive. This implementation iteration has not opened the archive. No private
+code, parameters, tuning, topology, or weights inform the implementation.
+The Google HDR+ public project and paper abstract, Android metadata definitions,
+and Khronos synchronization specifications are public references. The paper PDF
+could not be retrieved; no full-paper review is claimed. All algorithm code and
+synthetic fixtures are independently written. No third-party HDR+ code is copied.

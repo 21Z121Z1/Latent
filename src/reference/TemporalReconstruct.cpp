@@ -32,6 +32,12 @@ public:
             field.tiles.size() != static_cast<std::size_t>(field.columns) * field.rows) {
             throw std::invalid_argument("fusion binding/field mismatch");
         }
+        if (!std::isfinite(source.radiometricConfidence) || source.radiometricConfidence < 0 ||
+            source.radiometricConfidence > 1) throw std::invalid_argument("invalid radiometric confidence");
+        for (const auto& tile : field.tiles) {
+            if (!std::isfinite(tile.dx) || !std::isfinite(tile.dy) || !std::isfinite(tile.confidence) ||
+                tile.confidence < 0 || tile.confidence > 1) throw std::invalid_argument("invalid motion tile");
+        }
         imaging::FrameContribution contribution{};
         contribution.frame = field.source;
         contribution.regions.resize(field.tiles.size());

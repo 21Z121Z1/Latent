@@ -1,4 +1,7 @@
 #include "latent/runtime/TemporalPipeline.h"
+#ifdef LATENT_ENABLE_VULKAN_RUNTIME
+#include "latent/vulkan/TemporalFusion.h"
+#endif
 #include <chrono>
 #include <stdexcept>
 
@@ -51,8 +54,15 @@ TemporalResult executeTemporalPlan(const TemporalExecutionPlan& plan, const Host
     const auto refView = bindings.view(burst, trace.selection.frame);
     const auto ref = reference::normalizeTemporalRaw(refView, *refView.metadata, policy,
                                                     plan.request().reconstruction.applyLensShading);
-    if (plan.fusionBackend() != TemporalBackend::Reference) throw std::runtime_error("requested temporal lowering unavailable in this build");
-    auto session = reference::makeReferenceFusionSession(ref, policy);
+    std::unique_ptr<reference::TemporalFusionSession> session;
+    if (plan.fusionBackend() == TemporalBackend::Reference) session = reference::makeReferenceFusionSession(ref, policy);
+    else {
+#ifdef LATENT_ENABLE_VULKAN_RUNTIME
+        session = vulkan::makeTemporalFusionSession(ref, policy);
+#else
+        throw std::runtime_error("requested temporal lowering unavailable in this build");
+#endif
+    }
     auto lineage = std::make_shared<imaging::ImageLineage>();
     lineage->burst = burst.id; lineage->sequence = burst.sequence; lineage->calibration = burst.calibration;
     lineage->reference = trace.selection.frame;
@@ -70,6 +80,7 @@ TemporalResult executeTemporalPlan(const TemporalExecutionPlan& plan, const Host
             input.gainEstimated, input.noiseEstimated, std::move(field)});
     }
     const auto accumulation = session->finish();
+    session.reset(); // Release device resources before allocating scene/render intermediates.
     result.fused = reference::finishTemporalFusion(ref, accumulation, lineage);
     auto finish = plan.request().reconstruction;
     finish.applyLensShading = false;
@@ -83,6 +94,10 @@ TemporalResult executeTemporalPlan(const TemporalExecutionPlan& plan, const Host
 TemporalResult reconstructRawBurst(const imaging::RawBurst& burst, const HostRawBindings& bindings,
     const TemporalRequest& request, const reference::TemporalPolicy& policy,
     const TemporalExecutionPolicy& execution) {
-    return executeTemporalPlan(compileTemporalPlan(burst, request, policy, execution, {}), bindings);
+    TemporalCapabilities capabilities{};
+#ifdef LATENT_ENABLE_VULKAN_RUNTIME
+    if (execution.preferVulkan) capabilities.vulkanFusion = vulkan::temporalFusionAvailable(burst.extent);
+#endif
+    return executeTemporalPlan(compileTemporalPlan(burst, request, policy, execution, capabilities), bindings);
 }
 }  // namespace latent::runtime

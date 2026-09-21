@@ -4,12 +4,15 @@
 
 #include <algorithm>
 #include <cstring>
+#include <mutex>
 #include <stdexcept>
 #include <string>
 #include <utility>
 
 namespace latent::vulkan {
 namespace {
+// The existing runtime shares one queue across runners. Queue access is externally synchronized.
+std::recursive_mutex queueMutex;
 
 std::uint32_t findHostVisibleMemoryType(
     VkPhysicalDevice physicalDevice,
@@ -49,6 +52,7 @@ void validateTransfer(
 }  // namespace
 
 std::unique_ptr<ComputeRunner> ComputeRunner::tryCreate(std::string* detail) {
+    const std::lock_guard lock(queueMutex);
     const auto availability = VulkanRuntime::tryInitialize();
     if (!VulkanRuntime::available()) {
         if (detail != nullptr) {
@@ -103,6 +107,7 @@ std::unique_ptr<ComputeRunner> ComputeRunner::tryCreate(std::string* detail) {
 }
 
 ComputeRunner::~ComputeRunner() {
+    const std::lock_guard lock(queueMutex);
     if (device_ == VK_NULL_HANDLE) {
         return;
     }
@@ -355,6 +360,7 @@ void ComputeRunner::dispatch(
     const void* pushConstants,
     std::uint32_t pushConstantSize,
     std::uint32_t groupCountX) {
+    const std::lock_guard lock(queueMutex);
     const auto& entry = findPipeline(pipeline);
 
     const VkDescriptorSetAllocateInfo allocateInfo{
@@ -422,6 +428,10 @@ void ComputeRunner::dispatch(
             throw std::runtime_error("vkBeginCommandBuffer failed");
         }
 
+        const VkMemoryBarrier before{VK_STRUCTURE_TYPE_MEMORY_BARRIER, nullptr,
+            VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT};
+        vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, &before, 0, nullptr, 0, nullptr);
         vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
         vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_COMPUTE,
                                 entry.pipelineLayout, 0U, 1U,
@@ -432,6 +442,10 @@ void ComputeRunner::dispatch(
                                pushConstantSize, pushConstants);
         }
         vkCmdDispatch(command, groupCountX, 1U, 1U);
+        const VkMemoryBarrier after{VK_STRUCTURE_TYPE_MEMORY_BARRIER, nullptr,
+            VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_HOST_READ_BIT};
+        vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+            VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &after, 0, nullptr, 0, nullptr);
         if (vkEndCommandBuffer(command) != VK_SUCCESS) {
             throw std::runtime_error("vkEndCommandBuffer failed");
         }

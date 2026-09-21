@@ -32,18 +32,30 @@ if(LATENT_ENABLE_VULKAN_RUNTIME)
         FORCE)
     FetchContent_MakeAvailable(volk)
 
-    # Build-time SPIR-V compilation. ENABLE_OPT=OFF drops the SPIRV-Tools
-    # dependency; our per-target warning flags never reach glslang sources.
-    set(ENABLE_OPT OFF CACHE BOOL "" FORCE)
-    set(ENABLE_HLSL OFF CACHE BOOL "" FORCE)
-    set(ENABLE_GLSLANG_BINARIES ON CACHE BOOL "" FORCE)
-    set(SKIP_GLSLANG_INSTALL ON CACHE BOOL "" FORCE)
-    FetchContent_Declare(glslang
-        GIT_SHALLOW TRUE
-        GIT_REPOSITORY https://github.com/KhronosGroup/glslang.git
-        GIT_TAG 16.5.0
-    )
-    FetchContent_MakeAvailable(glslang)
+    set(LATENT_HOST_GLSLANG "" CACHE FILEPATH "Host glslang executable for Android/cross builds")
+    if(LATENT_HOST_GLSLANG)
+        if(NOT EXISTS "${LATENT_HOST_GLSLANG}")
+            message(FATAL_ERROR "LATENT_HOST_GLSLANG must name an existing host executable")
+        endif()
+        add_executable(glslang-standalone IMPORTED GLOBAL)
+        set_target_properties(glslang-standalone PROPERTIES IMPORTED_LOCATION "${LATENT_HOST_GLSLANG}")
+    else()
+        if(CMAKE_CROSSCOMPILING)
+            message(FATAL_ERROR "Cross builds require LATENT_HOST_GLSLANG; never execute target binaries at build time")
+        endif()
+        # Build-time SPIR-V compilation. ENABLE_OPT=OFF drops the SPIRV-Tools
+        # dependency; our per-target warning flags never reach glslang sources.
+        set(ENABLE_OPT OFF CACHE BOOL "" FORCE)
+        set(ENABLE_HLSL OFF CACHE BOOL "" FORCE)
+        set(ENABLE_GLSLANG_BINARIES ON CACHE BOOL "" FORCE)
+        set(SKIP_GLSLANG_INSTALL ON CACHE BOOL "" FORCE)
+        FetchContent_Declare(glslang
+            GIT_SHALLOW TRUE
+            GIT_REPOSITORY https://github.com/KhronosGroup/glslang.git
+            GIT_TAG 16.5.0
+        )
+        FetchContent_MakeAvailable(glslang)
+    endif()
 
     set(GENERATED_SHADER_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated_shaders")
     file(MAKE_DIRECTORY "${GENERATED_SHADER_DIR}")
@@ -77,15 +89,12 @@ set(LATENT_CORE_SOURCES
     src/imaging/RawFrame.cpp
     src/imaging/RawBurst.cpp
     src/runtime/RawBindings.cpp
-    src/runtime/TemporalPipeline.cpp
     src/imaging/ColorScience.cpp
     src/imaging/RawPacking.cpp
     src/reference/DngColor.cpp
     src/reference/Demosaic.cpp
     src/reference/NoisePropagation.cpp
     src/reference/RawNormalize.cpp
-    src/reference/TemporalReconstruct.cpp
-    src/reference/TemporalAlignment.cpp
     src/reference/ReferenceReconstruct.cpp
     src/reference/SensorLinearOps.cpp
     src/render/AcesToneScale.cpp
@@ -311,14 +320,4 @@ if(LATENT_BUILD_TESTS)
     add_test(NAME latent_temporal_contract_tests COMMAND latent_temporal_contract_tests)
 endif()
 
-if(LATENT_BUILD_TESTS)
-    add_executable(latent_temporal_tests tests/test_temporal.cpp)
-    target_link_libraries(latent_temporal_tests PRIVATE latent::core)
-    if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-        target_compile_options(latent_temporal_tests PRIVATE -ffp-contract=off)
-        if(LATENT_STRICT_WARNINGS)
-            target_compile_options(latent_temporal_tests PRIVATE -Wall -Wextra -Wpedantic -Wconversion -Wshadow -Werror)
-        endif()
-    endif()
-    add_test(NAME latent_temporal_tests COMMAND latent_temporal_tests)
-endif()
+include(cmake/Temporal.cmake)
