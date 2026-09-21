@@ -2,7 +2,7 @@
 
 Status: Active
 Related: ADR-0001 through ADR-0005; Plans 0001 and 0002
-Current step: Verify Android integration; expand quality and performance evidence.
+Current step: Pass latest-SHA Android/native CI, then perform the final independent review.
 
 ## Scope and authority
 
@@ -41,16 +41,16 @@ It does not complete the general graph compiler or Plans 0001 and 0002.
 
 1. Pass assembly, lint, unit tests, native loading, and fixture UI flow on the
    current Android increment. Earlier APK assembly is not current-code evidence.
-2. Extend reference quality/calibration and bounded-working-set experiments.
-3. Record host/software-driver benchmarks. Do not infer mobile performance.
-4. Inspect current-SHA Actions jobs, steps, logs, and artifacts. Review the full diff.
+2. Inspect current-SHA Actions jobs, steps, logs, artifacts, APK, and emulator replay.
+3. Review the full diff independently and close any semantic or lifetime defects.
 
 Reference gates cover validation, lineage, N=1 image equivalence, all Bayer
 layouts, odd borders, sub-black, radiometric variance scaling, translations,
-motion rejection, clipping, replay, and Monte Carlo calibration. Fixed-weight
-variance evidence does not establish unconditional calibration of adaptive
-weights. The high-frequency fractional-motion fixture fails closed at low
-registration confidence; its displacement gate alone is not a quality claim.
+motion rejection, clipping, replay, and Monte Carlo calibration. A band-limited
+sub-pixel fixture now gates displacement error and usable alignment confidence.
+An eight-frame full-pipeline fixture gates mean drift, MSE reduction, conditional
+variance calibration, and effective support. Fixed-weight and conditional variance
+evidence do not establish unconditional calibration of adaptive weights.
 
 ## Verification ledger
 
@@ -59,9 +59,10 @@ registration confidence; its displacement gate alone is not a quality claim.
 | Fresh unchanged baseline | GitHub Ubuntu 24.04, lavapipe | Run 35520430992, fresh job 106245198495; native 5/5, no-Vulkan 4/4, Ultra HDR 4/4; complete log inspected | VERIFIED | 28535ff41ead853a219ad4003a1300a7dbf6ac07 |
 | Baseline reproduced locally | GCC strict, SwiftShader | Explicit ICD and required-Vulkan run 5/5; no-Vulkan 4/4, no execution skip | VERIFIED | 28535ff41ead853a219ad4003a1300a7dbf6ac07 |
 | Capture policy and cancellation | Local strict builds and Actions run 35573951380 | no-Vulkan 6/6; real Vulkan 8/8; native/sanitizer jobs succeeded | VERIFIED | 8c739bb5abe9163b2c785149980535102ba90394 |
-| CFA transport and admission helper | Local GCC strict, SwiftShader | no-Vulkan 7/7; Vulkan 9/9; 478381 differential values, observed max error 0; 320 progressive dispatches | VERIFIED | Current source increment |
+| Temporal reference, CFA transport, and Vulkan differential | Local GCC strict, SwiftShader | no-Vulkan 7/7; Vulkan 9/9; band-limited sub-pixel error <=0.25 px with usable confidence; 8-frame MSE ratio 0.133 and conditional variance ratio 0.967; 478381 differential values with observed max error 0; 320 progressive dispatches | VERIFIED | 0a7d21d18841c0499947a51e7dd2096842cbf32c |
+| Host/software execution benchmark | Local GCC strict, SwiftShader | 257x193x4, 3 repeats; reference median about 1.21 s; Vulkan-path median about 1.17 s; Vulkan working-set bound 7,968,416 bytes; concurrent source frames 1. This is not mobile-performance evidence. | VERIFIED | 0a7d21d18841c0499947a51e7dd2096842cbf32c |
 | Initial Android assembly and parser tests | Actions run 35576794534, job 106260342510 | Both ABIs and APK assembled; parser unit tests passed; lint reported 16 errors; full log/report inspected | PARTIALLY VERIFIED | d106516924160ff714700d17b4599642ccd77ade |
-| Current Camera2/UI/JNI integration | Actions required | Code and tests added; updated SDK/toolchain, backup rules, and controls await current-commit verification | UNVERIFIED | Current source increment |
+| Current Camera2/UI/JNI integration | Actions required | Camera2 RAW capture, metadata transport, resource lifetime, UI, updated SDK/dependencies, and tests are committed; latest-SHA assembly/lint/emulator replay remain required | UNVERIFIED | 0a7d21d18841c0499947a51e7dd2096842cbf32c |
 | Real RAW, metadata, IMU, OEM, external import | Physical Android device | No device connected | UNVERIFIED | Not applicable |
 | Mobile latency, thermals, energy, memory traffic | Physical Android device | No device connected | UNVERIFIED | Not applicable |
 
