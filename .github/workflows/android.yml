@@ -28,7 +28,8 @@ jobs:
           sdkmanager --version | tee -a build-host/android-toolchain.log
           # Use the licenses already accepted in the hosted runner image.
           # Do not accept a new agreement on behalf of the repository owner.
-          test -f "$ANDROID_HOME/platforms/android-37/android.jar"
+          find "$ANDROID_HOME/platforms" -maxdepth 1 -type d -name 'android-37*' -print | tee -a build-host/android-toolchain.log
+          find "$ANDROID_HOME/platforms" -maxdepth 1 -type d -name 'android-37*' -print -quit | grep -q .
           test -x "$ANDROID_HOME/build-tools/36.0.0/aapt2"
           sdkmanager 'ndk;27.2.12479018' 'cmake;3.22.1' </dev/null
       - name: Build pinned host shader compiler
