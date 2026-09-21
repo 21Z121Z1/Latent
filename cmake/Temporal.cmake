@@ -1,6 +1,7 @@
 # Temporal operations extend the existing semantic/reference core and backend.
 target_sources(latent_core PRIVATE
     src/runtime/TemporalPipeline.cpp
+    src/runtime/CapturePlan.cpp
     src/reference/TemporalReconstruct.cpp
     src/reference/TemporalAlignment.cpp)
 
@@ -36,6 +37,7 @@ function(latent_temporal_test name source)
 endfunction()
 if(LATENT_BUILD_TESTS)
     latent_temporal_test(latent_temporal_tests tests/test_temporal.cpp)
+    latent_temporal_test(latent_capture_plan_tests tests/test_capture_plan.cpp)
     if(LATENT_ENABLE_VULKAN_RUNTIME)
         latent_temporal_test(latent_temporal_vulkan_tests tests/test_temporal_vulkan.cpp)
     endif()
