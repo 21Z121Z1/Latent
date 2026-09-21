@@ -50,6 +50,10 @@ int main() {
         check(cancelled && events>2,"cancel between source lifetimes");
         const auto resumed=runtime::reconstructRawBurst(burst,binding,{}, {},execution);
         check(resumed.scene.lineage->inputs.size()==2,"cancel does not poison a subsequent run");
+        const auto compiled=runtime::compileTemporalPlan(burst,{}, {},execution,{});
+        check(compiled.workingSetBound()==runtime::temporalWorkingSetBound(burst.extent,burst.members.size(),{},runtime::TemporalBackend::Reference),"one admission formula");
+        rejects([&]{(void)runtime::temporalWorkingSetBound({2,2},0,{},runtime::TemporalBackend::Reference);});
+        rejects([&]{(void)runtime::temporalWorkingSetBound({0xffffffffU,0xffffffffU},64,{},runtime::TemporalBackend::Vulkan);});
         std::cout << "capture policy, authority and execution cancellation tests passed\n";
     } catch(const std::exception& e) { std::cerr << e.what() << '\n'; return 1; }
 }

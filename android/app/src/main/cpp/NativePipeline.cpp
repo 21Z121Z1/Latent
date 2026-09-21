@@ -3,8 +3,10 @@
 
 #include "latent/imaging/ColorScience.h"
 #include "latent/runtime/CapturePlan.h"
+#include "latent/runtime/CfaTransport.h"
 #include "latent/runtime/TemporalPipeline.h"
 #include "latent/render/ReferenceRenderer.h"
+#include "latent/vulkan/TemporalFusion.h"
 
 #include <algorithm>
 #include <array>
@@ -182,14 +184,22 @@ jstring process(JNIEnv* e, jobjectArray inputs, jobject bitmap, jboolean vk, jlo
         m.cameraId = f.text("cameraId"); m.sensorMode = f.text("sensorMode");
         const auto cfa = f.integer("cfa");
         if (cfa < 0 || cfa > 3) throw std::invalid_argument("unsupported CFA layout");
-        m.cfa = static_cast<imaging::CfaPattern>(cfa);
+        const auto phaseX = f.integer("phaseX"), phaseY = f.integer("phaseY");
+        if (phaseX < 0 || phaseX > 1 || phaseY < 0 || phaseY > 1) throw std::invalid_argument("invalid CFA crop phase");
+        const auto mapping = runtime::cfaTransportMap(static_cast<imaging::CfaPattern>(cfa),
+            static_cast<std::uint32_t>(phaseX), static_cast<std::uint32_t>(phaseY));
+        m.cfa = mapping.pattern;
         using Source = imaging::MetadataSource;
-        m.staticBlack = observed(imaging::BlackLevel{f.fixed<4>("black")}, Source::StaticCharacteristic);
+        const auto inputBlack = f.fixed<4>("black");
+        imaging::BlackLevel black{};
+        for (std::size_t c = 0; c < 4; ++c) black.cfa[c] = inputBlack[mapping.layoutIndex[c]];
+        m.staticBlack = observed(black, Source::StaticCharacteristic);
         m.staticWhite = observed(f.real("white"), Source::StaticCharacteristic);
         const auto dynamic = f.floats("dynamicBlack", 4);
         if (!dynamic.empty()) {
             if (dynamic.size() != 4) throw std::invalid_argument("dynamic black length mismatch");
-            imaging::BlackLevel level{}; std::copy(dynamic.begin(), dynamic.end(), level.cfa.begin());
+            imaging::BlackLevel level{};
+            for (std::size_t c = 0; c < 4; ++c) level.cfa[c] = dynamic[mapping.layoutIndex[c]];
             m.dynamicBlack = observed(level, Source::DynamicCaptureResult);
         }
         const auto dynamicWhite = f.real("dynamicWhite");
@@ -199,17 +209,28 @@ jstring process(JNIEnv* e, jobjectArray inputs, jobject bitmap, jboolean vk, jlo
         if (!noise.empty()) {
             if (noise.size() != 8) throw std::invalid_argument("noise profile length mismatch");
             imaging::NoiseModel model{}; model.coordinate = imaging::NoiseCoordinate::NormalizedBlackSubtracted;
-            for (std::size_t c = 0; c < 4; ++c) { model.shot[c] = noise[2U*c]; model.read[c] = noise[2U*c+1U]; }
+            for (std::size_t c = 0; c < 4; ++c) {
+                const auto inputChannel = mapping.layoutIndex[c];
+                model.shot[c] = noise[2U*inputChannel]; model.read[c] = noise[2U*inputChannel+1U];
+            }
             m.noiseProfile = observed(model, synthetic ? Source::DeviceProfile : Source::DynamicCaptureResult);
         }
         auto shading = f.floats("shading");
         if (!shading.empty()) {
+            if (shading.size() % 4U != 0U) throw std::invalid_argument("lens shading channel count mismatch");
+            for (std::size_t n = 0; n < shading.size(); n += 4U) {
+                const std::array<float,4> inputGains{shading[n], shading[n+1U], shading[n+2U], shading[n+3U]};
+                for (std::size_t c = 0; c < 4; ++c) shading[n+c] = inputGains[mapping.sensorChannel[c]];
+            }
             imaging::LensShadingMap map{positiveInt(f.integer("shadingColumns")), positiveInt(f.integer("shadingRows")), std::move(shading)};
             m.lensShading = observed(std::move(map), Source::DynamicCaptureResult);
         } else if (f.integer("shadingColumns") != 0 || f.integer("shadingRows") != 0) {
             throw std::invalid_argument("missing lens-shading payload");
         }
-        wb.push_back(f.fixed<4>("whiteBalance"));
+        const auto inputWb = f.fixed<4>("whiteBalance");
+        std::array<float,4> gains{};
+        for (std::size_t c = 0; c < 4; ++c) gains[c] = inputWb[mapping.sensorChannel[c]];
+        wb.push_back(gains);
         for (float gain : wb.back()) if (gain <= 0) throw std::invalid_argument("invalid white balance gain");
         color.push_back(imaging::Matrix3f{f.fixed<9>("sensorToLinearSrgb")});
         if (!imaging::inverted(color.back())) throw std::invalid_argument("singular sensor color transform");
@@ -232,9 +253,10 @@ jstring process(JNIEnv* e, jobjectArray inputs, jobject bitmap, jboolean vk, jlo
     execution.preferVulkan = vk == JNI_TRUE; execution.memoryBudgetBytes = positiveLong(memory);
     reference::TemporalPolicy policy{};
     runtime::TemporalRequest request{};
-    // Admission precedes selector scratch allocations. Actual backend is probed by
-    // reconstructRawBurst; reserving the larger bound is conservative for fallback.
-    (void)runtime::compileTemporalPlan(burst, request, policy, execution, {execution.preferVulkan});
+    // Admission precedes selector scratch allocations. Use the same capability
+    // predicate as production execution; do not reject a legal CPU fallback.
+    const bool canFuseVk = execution.preferVulkan && vulkan::temporalFusionAvailable(burst.extent);
+    (void)runtime::compileTemporalPlan(burst, request, policy, execution, {canFuseVk});
     LocalRef callbackType(e, e->GetObjectClass(progress)); checkJava(e);
     const auto callback = e->GetMethodID(static_cast<jclass>(callbackType.get()), "onProgress", "(III)Z"); checkJava(e);
     const runtime::TemporalExecutionControl control{[&](const runtime::TemporalProgress& p) {
@@ -346,4 +368,17 @@ extern "C" JNIEXPORT jstring JNICALL Java_dev_latent_camera_NativeBridge_capture
     JNIEnv* e, jobject, jobject observation, jobject intent, jobject capability) {
     try { return capturePlan(e, observation, intent, capability); }
     catch (...) { translateException(e); return nullptr; }
+}
+
+extern "C" JNIEXPORT jlong JNICALL Java_dev_latent_camera_NativeBridge_processingBound(
+    JNIEnv* e, jobject, jint width, jint height, jint maximumFrames, jboolean preferVk) {
+    try {
+        const latent::imaging::Extent extent{positiveInt(width), positiveInt(height)};
+        const bool vk = preferVk == JNI_TRUE && latent::vulkan::temporalFusionAvailable(extent);
+        const auto bytes = latent::runtime::temporalWorkingSetBound(extent, positiveInt(maximumFrames), {},
+            vk ? latent::runtime::TemporalBackend::Vulkan : latent::runtime::TemporalBackend::Reference);
+        if (bytes > static_cast<std::uint64_t>(std::numeric_limits<jlong>::max()))
+            throw std::invalid_argument("working set exceeds JNI byte range");
+        return static_cast<jlong>(bytes);
+    } catch (...) { translateException(e); return 0; }
 }

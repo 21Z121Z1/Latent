@@ -18,4 +18,5 @@
     <string name="diagnostics">Diagnostics</string>
     <string name="vulkan_fusion">Prefer Vulkan fusion</string>
     <string name="render_exposure">Render exposure: %1$.1f EV</string>
+    <string name="noise_target">Noise target: %1$.3f (lower requests more support)</string>
 </resources>

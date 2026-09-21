@@ -4,7 +4,10 @@ import android.graphics.Bitmap
 import androidx.annotation.Keep
 import java.nio.ByteBuffer
 
-/** Transport projection only. Native RawBurst validation owns imaging semantics. */
+/** Transport projection only. Native RawBurst validation owns imaging semantics.
+ * black/dynamicBlack/noise use the row-major 2x2 sensor layout. White balance and
+ * shading use Android [R, green-even, green-odd, B]. Native code maps crop phase.
+ */
 @Keep
 class RawInput(
     @JvmField val id: Long,
@@ -15,6 +18,8 @@ class RawInput(
     @JvmField val height: Int,
     @JvmField val rowStrideBytes: Int,
     @JvmField val cfa: Int,
+    @JvmField val phaseX: Int = 0,
+    @JvmField val phaseY: Int = 0,
     @JvmField val cameraId: String,
     @JvmField val sensorMode: String,
     @JvmField val pixels: ByteBuffer,
@@ -87,6 +92,8 @@ object NativeBridge {
         renderExposureEv: Float,
         progress: NativeProgress,
     ): String
+
+    external fun processingBound(width: Int, height: Int, maximumFrames: Int, preferVulkan: Boolean): Long
 
     external fun capturePlan(
         observation: CaptureObservationInput,

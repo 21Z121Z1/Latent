@@ -78,6 +78,10 @@ struct TemporalResult {
     reference::FusedRaw fused;
     TemporalExecutionTrace trace;
 };
+// Physical payload admission estimate shared by capture/runtime adapters. It
+// excludes borrowed RAW, output presentation, and driver allocation overhead.
+[[nodiscard]] std::uint64_t temporalWorkingSetBound(imaging::Extent extent, std::size_t members,
+    const reference::TemporalPolicy& policy, TemporalBackend backend);
 [[nodiscard]] TemporalExecutionPlan compileTemporalPlan(const imaging::RawBurst& burst,
     const TemporalRequest& request, const reference::TemporalPolicy& policy,
     const TemporalExecutionPolicy& execution, const TemporalCapabilities& capabilities);

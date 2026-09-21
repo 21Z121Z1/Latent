@@ -28,7 +28,7 @@ jobs:
           sdkmanager --version | tee -a build-host/android-toolchain.log
           # Use the licenses already accepted in the hosted runner image.
           # Do not accept a new agreement on behalf of the repository owner.
-          sdkmanager 'platforms;android-36' 'build-tools;35.0.0' 'ndk;27.2.12479018' 'cmake;3.22.1' </dev/null
+          sdkmanager 'platforms;android-37' 'build-tools;36.0.0' 'ndk;27.2.12479018' 'cmake;3.22.1' </dev/null
       - name: Build pinned host shader compiler
         run: |
           cmake -S . -B build-host -DLATENT_BUILD_TESTS=OFF -DCMAKE_BUILD_TYPE=Release
@@ -51,6 +51,7 @@ jobs:
           name: android-evidence-${{ github.event.pull_request.head.sha || github.sha }}
           if-no-files-found: error
           retention-days: 7
+          include-hidden-files: true
           path: |
             android/app/build/outputs/apk/
             android/app/build/reports/

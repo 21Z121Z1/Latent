@@ -2,6 +2,7 @@
 target_sources(latent_core PRIVATE
     src/runtime/TemporalPipeline.cpp
     src/runtime/CapturePlan.cpp
+    src/runtime/CfaTransport.cpp
     src/reference/TemporalReconstruct.cpp
     src/reference/TemporalAlignment.cpp)
 
@@ -38,6 +39,7 @@ endfunction()
 if(LATENT_BUILD_TESTS)
     latent_temporal_test(latent_temporal_tests tests/test_temporal.cpp)
     latent_temporal_test(latent_capture_plan_tests tests/test_capture_plan.cpp)
+    latent_temporal_test(latent_cfa_transport_tests tests/test_cfa_transport.cpp)
     if(LATENT_ENABLE_VULKAN_RUNTIME)
         latent_temporal_test(latent_temporal_vulkan_tests tests/test_temporal_vulkan.cpp)
     endif()

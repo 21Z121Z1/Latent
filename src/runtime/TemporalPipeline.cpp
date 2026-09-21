@@ -3,9 +3,28 @@
 #include "latent/vulkan/TemporalFusion.h"
 #endif
 #include <chrono>
+#include <limits>
 #include <stdexcept>
 
 namespace latent::runtime {
+std::uint64_t temporalWorkingSetBound(imaging::Extent extent, std::size_t members,
+    const reference::TemporalPolicy& policy, TemporalBackend backend) {
+    reference::validateTemporalPolicy(policy);
+    if (extent.width < 2U || extent.height < 2U || members == 0U)
+        throw std::invalid_argument("invalid temporal admission extent or membership");
+    if (backend != TemporalBackend::Reference && backend != TemporalBackend::Vulkan)
+        throw std::invalid_argument("invalid temporal admission backend");
+    const auto n = extent.pixelCount();
+    const auto tiles = ((static_cast<std::uint64_t>(extent.width) + policy.tileSize - 1U) / policy.tileSize) *
+        ((static_cast<std::uint64_t>(extent.height) + policy.tileSize - 1U) / policy.tileSize);
+    const std::uint64_t bytesPerPixel = backend == TemporalBackend::Vulkan ? 160U : 112U;
+    const auto maximum = std::numeric_limits<std::uint64_t>::max();
+    if (n > maximum / bytesPerPixel || tiles > maximum / 128U / members)
+        throw std::invalid_argument("temporal working-set arithmetic overflow");
+    const auto imageBytes = n * bytesPerPixel, traceBytes = tiles * 128U * members;
+    if (traceBytes > maximum - imageBytes) throw std::invalid_argument("temporal working-set arithmetic overflow");
+    return imageBytes + traceBytes;
+}
 TemporalExecutionPlan compileTemporalPlan(const imaging::RawBurst& burst, const TemporalRequest& request,
     const reference::TemporalPolicy& policy, const TemporalExecutionPolicy& execution,
     const TemporalCapabilities& capabilities) {
@@ -17,22 +36,11 @@ TemporalExecutionPlan compileTemporalPlan(const imaging::RawBurst& burst, const 
     }
     TemporalExecutionPlan plan{};
     plan.burst_ = burst; plan.request_ = request; plan.policy_ = policy;
-    // Conservative payload bound includes source/ref FP32, accumulators,
-    // pyramids, result/scene, and O(N*tiles) trace/lineage. Borrowed RAW storage
-    // and driver allocator overhead are excluded and must be budgeted by capture.
-    const auto n = burst.extent.pixelCount();
-    const auto tiles = ((static_cast<std::uint64_t>(burst.extent.width) + policy.tileSize - 1U) / policy.tileSize) *
-        ((static_cast<std::uint64_t>(burst.extent.height) + policy.tileSize - 1U) / policy.tileSize);
     const bool vk = execution.preferVulkan && capabilities.vulkanFusion;
-    const std::uint64_t bytesPerPixel = vk ? 160U : 112U;
-    if (n > execution.memoryBudgetBytes / bytesPerPixel ||
-        tiles > execution.memoryBudgetBytes / 128U / burst.members.size()) {
-        throw std::invalid_argument("temporal working set exceeds execution memory budget");
-    }
-    plan.workingSetBound_ = n * bytesPerPixel + tiles * 128U * burst.members.size();
-    if (plan.workingSetBound_ > execution.memoryBudgetBytes) {
+    plan.workingSetBound_ = temporalWorkingSetBound(burst.extent, burst.members.size(), policy,
+        vk ? TemporalBackend::Vulkan : TemporalBackend::Reference);
+    if (plan.workingSetBound_ > execution.memoryBudgetBytes)
         throw std::invalid_argument("temporal working set and trace exceed execution memory budget");
-    }
     for (const auto& schema : graph::temporalSchemas) {
         plan.stages_.push_back({schema.operation,
             vk && schema.operation == graph::TemporalOperation::FuseRaw ? TemporalBackend::Vulkan : TemporalBackend::Reference});

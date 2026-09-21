@@ -1,6 +1,7 @@
 package dev.latent.camera
 
 import android.graphics.Bitmap
+import androidx.core.graphics.createBitmap
 import android.graphics.BitmapFactory
 import android.provider.MediaStore
 import androidx.test.platform.app.InstrumentationRegistry
@@ -13,7 +14,7 @@ import java.util.concurrent.CancellationException
 class NativeReplayTest {
     private val context get() = InstrumentationRegistry.getInstrumentation().targetContext
     private fun frames() = context.assets.open("static_burst.b64").bufferedReader().use { ReplayFixture.decode(it.readText()) }
-    private fun image() = Bitmap.createBitmap(33, 25, Bitmap.Config.ARGB_8888)
+    private fun image() = createBitmap(33, 25)
     private fun process(vulkan: Boolean, output: Bitmap): String = NativeBridge.processRaw(frames(), output, vulkan, 64L*1024*1024, 0f) { _,_,_ -> true }
 
     @Test fun nativeLoadReferenceReplayAndProductionLowering() {
@@ -50,7 +51,7 @@ class NativeReplayTest {
         assertThrows(CancellationException::class.java) {
             NativeBridge.processRaw(frames(), output, false, 64L*1024*1024, 0f) { _,_,_ -> false }
         }
-        val wrong = Bitmap.createBitmap(4,4,Bitmap.Config.ARGB_8888)
+        val wrong = createBitmap(4,4)
         assertThrows(IllegalArgumentException::class.java) { process(false, wrong) }
         assertTrue(JSONObject(process(false, output)).getDouble("effectiveN") > 1)
         output.recycle(); wrong.recycle()
