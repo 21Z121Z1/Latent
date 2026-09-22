@@ -1,0 +1,31 @@
+name: public-research-inputs
+on:
+  push:
+    branches: [automation/public-research-inputs-20260922]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  acquire:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Download author-hosted papers and dataset index
+        run: |
+          set -euo pipefail
+          mkdir -p inputs
+          curl --fail --location --retry 2 --max-time 180 https://graphics.stanford.edu/papers/hdrp/hasinoff-hdrplus-sigasia16.pdf -o inputs/hdrplus.pdf
+          curl --fail --location --retry 2 --max-time 180 https://graphics.stanford.edu/papers/hdrp/hasinoff-hdrplus-sigasia16-supp.pdf -o inputs/hdrplus-supp.pdf
+          curl --fail --location --retry 2 --max-time 60 'https://storage.googleapis.com/storage/v1/b/hdrplusdata/o?prefix=20171106_subset/&maxResults=1000' -o inputs/dataset-index.json
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq poppler-utils
+          pdftotext -layout inputs/hdrplus.pdf inputs/hdrplus.txt
+          pdftotext -layout inputs/hdrplus-supp.pdf inputs/hdrplus-supp.txt
+          sha256sum inputs/* > inputs/SHA256SUMS
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: public-research-${{ github.sha }}
+          retention-days: 7
+          if-no-files-found: error
+          path: inputs/
