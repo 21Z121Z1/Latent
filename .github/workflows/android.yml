@@ -70,3 +70,4 @@ jobs:
             build-host/android-logcat.log
             build-host/android-screenshot.png
             build-host/android-replay-result.png
+            build-host/android-visual-instrumentation.log
