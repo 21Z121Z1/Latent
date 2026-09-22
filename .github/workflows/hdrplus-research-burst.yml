@@ -1,0 +1,73 @@
+name: hdrplus-research-burst
+on:
+  push:
+    branches: [automation/public-research-inputs-20260922]
+    paths: [.github/workflows/hdrplus-research-burst.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  acquire:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Install independent DNG decoder
+        run: |
+          python3 -m venv /tmp/decoder
+          /tmp/decoder/bin/pip install rawpy==0.25.1 tifffile==2025.6.11 numpy==2.2.6
+      - name: Download fixed observations and retain metadata
+        run: |
+          /tmp/decoder/bin/python - <<'PY'
+          import base64, hashlib, json, pathlib, urllib.request
+          import numpy as np, rawpy, tifffile
+          root = pathlib.Path('inputs'); root.mkdir()
+          prefix = '20171106_subset/bursts/0006_20160722_115157_431/'
+          entries = [
+            ('payload_N000.dng','1518721409675415',6356788,'q8PfKbSmAByRCU2GYPuE2Q=='),
+            ('payload_N001.dng','1518721410370160',6357852,'KauuYN7z5N5ogaxbKgN7uw=='),
+            ('payload_N002.dng','1518721410415313',6357806,'z/JMi3o9hFEatY3uvP3WQg=='),
+            ('payload_N003.dng','1518721409776243',6357134,'P/dxBWPUJcA4b+TNGJVy7w=='),
+            ('payload_N004.dng','1518721409930857',6357322,'lx61T8hI10FbiBI4edcoNQ=='),
+            ('payload_N005.dng','1518721409939291',6359574,'QmaHQZIQXbpuLVQqQZtK5Q=='),
+            ('payload_N006.dng','1518721410006212',6357768,'t9dX/52HQJab13VRUz3gkQ=='),
+            ('rgb2rgb.txt','1518721399483924',92,'vmYIpTe2eiaFw+U66udEZg=='),
+            ('timing.txt','1518721399544594',66,'oXifRhoEXF+8UbhTmxa/wg==')]
+          lsc_generations = ['1518721398976856','1518721399450655','1518721399364633','1518721399330945','1518721399420362','1518721399029177','1518721399354447']
+          entries += [(f'lens_shading_map_N{k:03d}.tiff',g,3854,'vnCRWPVNEQorpCzZA5ePwg==') for k,g in enumerate(lsc_generations)]
+          manifest = {'source':'https://www.hdrplusdata.org/dataset.html','license':'CC-BY-SA-4.0','attribution':'Google HDR+ Burst Photography Dataset, Hasinoff et al.','decoder':{'rawpy':rawpy.__version__,'libraw':rawpy.libraw_version},'objects':[]}
+          def serial(value):
+            if isinstance(value, np.ndarray): return value.tolist()
+            if isinstance(value, np.generic): return value.item()
+            if isinstance(value, bytes): return {'base64':base64.b64encode(value).decode()}
+            if isinstance(value, dict): return {str(k):serial(v) for k,v in value.items()}
+            if isinstance(value, (tuple,list)): return [serial(v) for v in value]
+            return value
+          for name,generation,size,md5 in entries:
+            url = 'https://storage.googleapis.com/hdrplusdata/'+prefix+name+'?generation='+generation
+            with urllib.request.urlopen(url,timeout=90) as response: data = response.read(size+1)
+            assert len(data)==size and base64.b64encode(hashlib.md5(data).digest()).decode()==md5, name
+            file = root/name; file.write_bytes(data)
+            record={'name':name,'url':url,'size':size,'md5':md5,'sha256':hashlib.sha256(data).hexdigest()}
+            if name.endswith('.dng'):
+              with rawpy.imread(str(file)) as raw:
+                h,w = raw.raw_image_visible.shape
+                y=((h-1024)//2)&~1; x=((w-1024)//2)&~1
+                crop=raw.raw_image_visible[y:y+1024,x:x+1024].copy().astype('<u2')
+                assert crop.shape==(1024,1024)
+                (root/(name+'.u16')).write_bytes(crop.tobytes())
+                record['crop']={'x':x,'y':y,'width':1024,'height':1024,'original_visible_width':w,'original_visible_height':h,'sensor_left':raw.sizes.left_margin,'sensor_top':raw.sizes.top_margin,'cfa_colors':raw.raw_colors_visible[y:y+2,x:x+2].tolist(),'color_desc':raw.color_desc.decode(),'black_per_channel':raw.black_level_per_channel,'white':raw.white_level,'as_shot_multipliers':raw.camera_whitebalance}
+              with tifffile.TiffFile(file) as tf:
+                record['tiff_ifds']=[{tag.name:serial(tag.value) for tag in page.tags.values() if tag.name not in ('JPEGTables',)} for page in tf.pages]
+            manifest['objects'].append(record)
+          (root/'manifest.json').write_text(json.dumps(manifest,indent=2))
+          (root/'ATTRIBUTION.txt').write_text('Google HDR+ Burst Photography Dataset. Hasinoff et al. CC-BY-SA 4.0. Source: https://www.hdrplusdata.org/dataset.html\nOriginal DNGs unchanged. Derived .u16 files are losslessly decoded, unprocessed 1024x1024 central crops with origins recorded in manifest.json; no demosaic, black correction, tone, or normalization. Crops retain CC-BY-SA 4.0. No ground-truth image-quality claim.\n')
+          (root/'SHA256SUMS').write_text(''.join(hashlib.sha256(f.read_bytes()).hexdigest()+'  '+f.name+'\n' for f in sorted(root.iterdir())))
+          print(json.dumps({'objects':len(entries),'rawpy':rawpy.__version__,'libraw':rawpy.libraw_version}))
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: hdrplus-observations-${{ github.sha }}
+          retention-days: 7
+          if-no-files-found: error
+          path: inputs/
