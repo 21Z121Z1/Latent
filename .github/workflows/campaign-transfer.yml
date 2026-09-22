@@ -1,0 +1,54 @@
+name: campaign-transfer
+on:
+  push:
+    branches: [automation/public-research-inputs-20260922]
+    paths: [campaign-transfer.json]
+permissions:
+  contents: write
+jobs:
+  transfer:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+      - name: Verify exact base and tree, create staging commit
+        run: |
+          python3 - <<'PY'
+          import base64, gzip, hashlib, json, pathlib, re, subprocess
+          def git(*args): return subprocess.check_output(['git',*args],text=True).strip()
+          payload=json.loads(pathlib.Path('campaign-transfer.json').read_text())
+          for key in ('base','tree'):
+              assert re.fullmatch('[0-9a-f]{40}',payload[key]), key
+          assert re.fullmatch('[0-9a-f]{64}',payload['sha256'])
+          compressed=base64.b64decode(payload['patch_gzip_base64'],validate=True)
+          assert len(compressed)<4*1024*1024
+          import io
+          with gzip.GzipFile(fileobj=io.BytesIO(compressed)) as stream: patch=stream.read(16*1024*1024+1)
+          assert len(patch)<=16*1024*1024 and hashlib.sha256(patch).hexdigest()==payload['sha256']
+          assert git('rev-parse','origin/feat/continuous-raw-reconstruction')==payload['base'], 'work branch changed: reconcile before writing'
+          pathlib.Path('/tmp/campaign.patch').write_bytes(patch)
+          git('checkout','--detach',payload['base'])
+          git('apply','--check','--index','/tmp/campaign.patch')
+          git('apply','--index','/tmp/campaign.patch')
+          assert git('write-tree')==payload['tree'], 'tree differs from locally reviewed content'
+          git('diff','--cached','--check')
+          git('config','user.name','Latent campaign transport')
+          git('config','user.email','41898282+github-actions[bot]@users.noreply.github.com')
+          assert 0<len(payload['message'])<=200
+          git('commit','-m',payload['message'])
+          commit=git('rev-parse','HEAD')
+          git('push','origin','HEAD:refs/heads/automation/campaign-staging')
+          root=pathlib.Path('/tmp/transfer'); root.mkdir()
+          git('bundle','create',str(root/'latent.bundle'),'HEAD')
+          record={'base':payload['base'],'tree':payload['tree'],'commit':commit,'patch_sha256':payload['sha256']}
+          (root/'receipt.json').write_text(json.dumps(record,indent=2))
+          print(json.dumps(record))
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: campaign-transfer-${{ github.sha }}
+          retention-days: 7
+          if-no-files-found: error
+          path: /tmp/transfer/
