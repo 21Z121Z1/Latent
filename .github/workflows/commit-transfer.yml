@@ -1,0 +1,32 @@
+name: exact-source-transfer
+on:
+  push:
+    branches: [work/temporal-transfer-control]
+permissions:
+  contents: write
+jobs:
+  import:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+      - name: Verify and import exact source tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat transfer/part-{0,1,2,3} | base64 --decode | gzip --decompress > "$RUNNER_TEMP/source.patch"
+          echo "93b70ba3ad64865faa21293ab2ae488b54c5e978f0d875a06473ba30094fa036  $RUNNER_TEMP/source.patch" | sha256sum --check
+          git checkout --detach a13a46a1f7c5d2eeec9a170ea6bd1a14f159d0c7
+          git apply --index --check "$RUNNER_TEMP/source.patch"
+          git apply --index "$RUNNER_TEMP/source.patch"
+          git diff --cached --check
+          tree=$(git write-tree)
+          test "$tree" = 71e3c7bfc86a62c4d05d7a712324ee3c9095ee01
+          printf '%s' 'dHJlZSA3MWUzYzdiZmM4NmE2MmM0ZDA1ZDdhNzEyMzI0ZWUzYzkwOTVlZTAxCnBhcmVudCBhMTNhNDZhMWY3YzVkMmVlZWM5YTE3MGVhNmJkMWExNGYxNTlkMGM3CmF1dGhvciBMYXRlbnQgZW5naW5lZXJpbmcgPDQxODk4MjgyK2dpdGh1Yi1hY3Rpb25zW2JvdF1AdXNlcnMubm9yZXBseS5naXRodWIuY29tPiAxNzkwMDgwMTY5ICswMDAwCmNvbW1pdHRlciBMYXRlbnQgZW5naW5lZXJpbmcgPDQxODk4MjgyK2dpdGh1Yi1hY3Rpb25zW2JvdF1AdXNlcnMubm9yZXBseS5naXRodWIuY29tPiAxNzkwMDgwMTY5ICswMDAwCgpmZWF0OiBjb250aW51b3VzIHJlZ2lzdHJhdGlvbiB3aXRoIGV4cGxpY2l0IHNhbXBsZSBnZW9tZXRyeSBldmlkZW5jZQo=' | base64 --decode > "$RUNNER_TEMP/commit"
+          sha=$(git hash-object -t commit -w "$RUNNER_TEMP/commit")
+          test "$sha" = fc91c53a9f554e91e05bf5a5fb07a5274db17d55
+          test "$(git rev-parse "$sha^")" = a13a46a1f7c5d2eeec9a170ea6bd1a14f159d0c7
+          git show --stat "$sha"
+          git push origin "$sha:refs/heads/work/temporal-transfer-fc91c53"
+          printf 'verified_commit=%s\nverified_tree=%s\n' "$sha" "$tree"
