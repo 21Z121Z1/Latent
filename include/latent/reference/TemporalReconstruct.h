@@ -64,6 +64,8 @@ struct MotionTile {
 };
 static_assert(sizeof(MotionTile) == 16U);
 enum class GeometryStatus : std::uint32_t { Reference, Estimated, Unobservable, Ambiguous, Inconsistent };
+// A fallback assumption is not an observed displacement or confidence.
+enum class GeometryPrior : std::uint32_t { None, Identity, Global };
 struct RegistrationEvidence {
     // Conditional linearized guide-noise scale, not an unconditional calibrated
     // displacement posterior. Includes a conservative cubic-stencil reuse factor.
@@ -71,6 +73,7 @@ struct RegistrationEvidence {
     float cycleErrorPixels = std::numeric_limits<float>::infinity();
     std::uint32_t supportedGuideSamples = 0;
     GeometryStatus status = GeometryStatus::Unobservable;
+    GeometryPrior prior = GeometryPrior::None;
 };
 struct AlignmentField {
     imaging::FrameId source{}, reference{};

@@ -28,8 +28,10 @@ Proxy proxy(const NormalizedRaw& raw) {
             // Equal R/G0/G1/B cell aggregation: execution-only intensity proxy.
             d.value += s.value; d.variance += s.variance; count += 1.0F;
         }
-        d.usable = count > 0 ? 1.0F : 0.0F;
-        if (count > 0) { d.value /= count; d.variance /= count * count; }
+        // A partial cell changes the guide's spectral mixture between frames.
+        // Clipped, defective and incomplete edge cells cannot supply geometry.
+        d.usable = count == 4.0F ? 1.0F : 0.0F;
+        if (d.usable != 0) { d.value *= 0.25F; d.variance *= 0.0625F; }
     }
     return p;
 }
@@ -249,6 +251,17 @@ RegistrationEvidence geometricEvidence(const Proxy& ref, const Proxy& src, Windo
         (out.cycleErrorPixels > 0.5F ? GeometryStatus::Inconsistent : GeometryStatus::Estimated);
     return out;
 }
+// Evaluate compatibility at the stated fallback, without optimizing it and
+// thereby turning an underconstrained prior back into a noisy displacement.
+MotionTile atPrior(const Proxy& ref, const Proxy& src, Window window,
+                   MotionTile prior, float floor) {
+    const auto state = linearize(ref, src, window, prior.dx, prior.dy, floor);
+    const auto compatibility = state.coverage > 0 ? Cost{state.cost, state.coverage} :
+        cost(ref, src, window, prior.dx, prior.dy, floor);
+    prior.residual = compatibility.value;
+    prior.confidence = compatibility.coverage/(1.0F+0.25F*compatibility.value);
+    return prior;
+}
 // Keep spatially distinct hypotheses through ambiguous coarse levels. A
 // single winning translation can lock onto a different texture period.
 std::vector<MotionTile> beamSearch(const Proxy& ref, const Proxy& src,
@@ -365,6 +378,13 @@ AlignmentField alignTemporalRaw(const NormalizedRaw& reference, const Normalized
         if (otherState.coverage > 0 && otherState.cost-(1.0F-otherState.coverage) <= bestLoss+tolerance) ambiguous = true;
     }
     field.globalEvidence = geometricEvidence(r, s, {0, 0, r.width, r.height}, global, limit, policy.varianceFloor, ambiguous);
+    if (field.globalEvidence.status == GeometryStatus::Unobservable) {
+        global = atPrior(r, s, {0, 0, r.width, r.height}, {}, policy.varianceFloor);
+        field.globalEvidence = {};
+        field.globalEvidence.prior = GeometryPrior::Identity;
+        field.globalEvidence.supportedGuideSamples =
+            linearize(r, s, {0, 0, r.width, r.height}, 0, 0, policy.varianceFloor).count;
+    }
     field.global = global; field.global.dx *= 2.0F; field.global.dy *= 2.0F;
     for (std::uint32_t ty = 0; ty < field.rows; ++ty) for (std::uint32_t tx = 0; tx < field.columns; ++tx) {
         const auto halfTile = field.tileSize / 2U;
@@ -376,6 +396,13 @@ AlignmentField alignTemporalRaw(const NormalizedRaw& reference, const Normalized
         tile = refineContinuous(r, s, {x0, y0, x1, y1}, tile, limit, policy.varianceFloor);
         const auto ti = static_cast<std::size_t>(ty)*field.columns+tx;
         field.evidence[ti] = geometricEvidence(r, s, {x0, y0, x1, y1}, tile, limit, policy.varianceFloor, ambiguous);
+        if (field.evidence[ti].status == GeometryStatus::Unobservable) {
+            tile = atPrior(r, s, {x0, y0, x1, y1}, global, policy.varianceFloor);
+            field.evidence[ti] = {};
+            field.evidence[ti].prior = GeometryPrior::Global;
+            field.evidence[ti].supportedGuideSamples =
+                linearize(r, s, {x0, y0, x1, y1}, tile.dx, tile.dy, policy.varianceFloor).count;
+        }
         if (field.evidence[ti].status == GeometryStatus::Inconsistent) {
             const float error = field.evidence[ti].cycleErrorPixels;
             tile.confidence /= 1.0F+error*error;
