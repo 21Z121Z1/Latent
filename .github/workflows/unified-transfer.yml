@@ -1,0 +1,37 @@
+name: unified-source-transfer
+on:
+  push:
+    branches: [work/temporal-transfer-control]
+    paths: [.github/workflows/unified-transfer.yml]
+permissions:
+  contents: write
+jobs:
+  import:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+      - name: Verify and import exact reconciliation commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git hash-object transfer/733f339/exact-0)" = 64200d8be4bb59b813a81c0d56290f7c85fb40b4
+          test "$(git hash-object transfer/733f339/exact-1)" = 806bf150d685636323014e395cb5e408763e87da
+          test "$(git hash-object transfer/733f339/exact-2)" = 9c4bc637ffdfa06fdc1c2b759b60a663cca2538d
+          test "$(git hash-object transfer/733f339/exact-3)" = ceb5213df6901baaaba8c3479b41cacf24f5ad07
+          cat transfer/733f339/exact-{0,1,2,3} | base64 --decode | gzip --decompress > "$RUNNER_TEMP/source.patch"
+          echo "5ac1b7c6bf00c0ec65c8b158f5c1758b420c3bbc77481550aebef63f97479000  $RUNNER_TEMP/source.patch" | sha256sum --check
+          git checkout --detach 3d5cdfcba89f295fa6be79653e0a1793a4073109
+          git apply --index --check "$RUNNER_TEMP/source.patch"
+          git apply --index "$RUNNER_TEMP/source.patch"
+          git diff --cached --check
+          tree=$(git write-tree)
+          test "$tree" = 8c74163c83fd4183de5769f451af22d512a3b24d
+          printf '%s' 'dHJlZSA4Yzc0MTYzYzgzZmQ0MTgzZGU1NzY5ZjQ1MWFmMjJkNTEyYTNiMjRkCnBhcmVudCBmYzkxYzUzYTlmNTU0ZTkxZTA1YmY1YTVmYjA3YTUyNzRkYjE3ZDU1CnBhcmVudCAzZDVjZGZjYmE4OWYyOTVmYTZiZTc5NjUzZTBhMTc5M2E0MDczMTA5CmF1dGhvciBMYXRlbnQgZW5naW5lZXJpbmcgPDQxODk4MjgyK2dpdGh1Yi1hY3Rpb25zW2JvdF1AdXNlcnMubm9yZXBseS5naXRodWIuY29tPiAxNzkwMDgxNjA5ICswMDAwCmNvbW1pdHRlciBMYXRlbnQgZW5naW5lZXJpbmcgPDQxODk4MjgyK2dpdGh1Yi1hY3Rpb25zW2JvdF1AdXNlcnMubm9yZXBseS5naXRodWIuY29tPiAxNzkwMDgxNjA5ICswMDAwCgpmaXg6IHVuaWZ5IGN1YmljIHJlZ2lzdHJhdGlvbiwgZXhwbGljaXQgZ2VvbWV0cnkgcHJpb3JzIGFuZCBBbmRyb2lkIGV2aWRlbmNlCg==' | base64 --decode > "$RUNNER_TEMP/commit"
+          sha=$(git hash-object -t commit -w "$RUNNER_TEMP/commit")
+          test "$sha" = 733f339c2a774271de0bab5fc4665582bc84514b
+          test "$(git show -s --format=%P "$sha")" = 'fc91c53a9f554e91e05bf5a5fb07a5274db17d55 3d5cdfcba89f295fa6be79653e0a1793a4073109'
+          git show --stat "$sha"
+          git push origin "$sha:refs/heads/work/temporal-transfer-733f339"
+          printf 'verified_commit=%s\nverified_tree=%s\n' "$sha" "$tree"
