@@ -28,29 +28,32 @@ explicitly. Dynamic Camera2 color is labelled an estimate, not DNG calibration.
 - Preserve the original nonlinear-texture fractional-displacement fixture alongside
   the newer band-limited test; neither tolerance is weakened.
 - Capture the result UI inside instrumentation, before activity teardown. A cleanup
-  screenshot of the launcher is not visual evidence of the camera result.
+  screenshot of the launcher is not visual evidence of the camera result. The
+  1080x1920 in-test result screenshot was opened during independent review.
 - Remove obsolete Android/lint/PR status from this plan and README.
 
 ## Verification ledger
 
-The recovered implementation was `3d8c5d758a4151cddc298e149d985c74af4c431d`.
+The reviewed implementation is `a6eec7a099abd97484fe50f1a4906e5a967482d7`.
 Its exact-head runs and downloaded artifacts were independently checked on 2026-09-22:
 
-| Gate | Evidence on recovered head | Result |
+| Gate | Evidence on reviewed implementation | Result |
 | --- | --- | --- |
-| Native strict/Vulkan/SPIR-V | Actions 35680461646, linux job 106596124264; artifact 10674932404; all steps successful, 9/9 CTest | VERIFIED |
+| Native strict/Vulkan/SPIR-V | Actions 35702743631, linux job 106664367066; artifact 10683690188; all steps successful, 9/9 CTest | VERIFIED |
 | No-Vulkan and libultrahdr 2.0.2 | Same linux job and archived LastTest logs; 7/7 each | VERIFIED |
-| Clang ASan/UBSan | Same run, job 106596124505; artifact 10674952223; 7/7 | VERIFIED |
-| Android assemble/lint/JVM | Actions 35680461644, job 106596124182; artifact 10674457303; both ABIs, 8 JVM tests, no lint issues | VERIFIED |
-| Installed APK/JNI/Compose/MediaStore | Same Android artifact; 7 instrumentation tests, no failures/errors/skips | VERIFIED |
+| Clang ASan/UBSan | Same run, job 106664366830; artifact 10683185971; 7/7 | VERIFIED |
+| Android assemble/lint/JVM | Actions 35702743702, job 106664369149; artifact 10683680886; both ABIs, 8 JVM tests, no lint issues | VERIFIED |
+| Installed APK/JNI/Compose/MediaStore | Same Android artifact; 8 instrumentation tests plus a separate in-test screenshot run, no failures/errors/skips | VERIFIED |
 | Independent local reproduction | Artifact checksums and Git bundle checked; GCC strict + explicit SwiftShader ICD, 9/9 CTest | VERIFIED |
 
-The audit corrections require **new exact-head** native/sanitizer and Android runs.
+The implementation audit corrections passed all gates above. This ledger refresh
+changes documentation only; its own exact-head workflow outcomes are recorded in
+the final PR review record, without recursively committing a future SHA into itself.
 The final review record in PR #17 binds the reviewed SHA, run/job IDs, artifact
 checksums, and outcomes. A green run from the recovered head is not a pass for a
 later revision. All required workflows check out the PR head rather than its merge ref.
 
-Recovered-head quantitative evidence: 478,381 CPU/Vulkan values had observed max
+Reviewed-implementation quantitative evidence: 478,381 CPU/Vulkan values had observed max
 error 0 (not a universal bit-exactness claim); 320 lifetime dispatches passed.
 Eight-frame static MSE ratio was 0.133149, conditional variance ratio 0.967070,
 and mean effective support 7.85266. Band-limited displacement error was 0.25 px;
@@ -58,7 +61,7 @@ the restored nonlinear-texture case has 0.5 px error per axis under its original
 0.6 px bound. These expose first-generation limits, not general registration quality.
 
 The archived 257x193x4, three-repeat host benchmark measured reference median
-1373.86 ms and Vulkan-path median 1347.89 ms, admission bound 7,968,416 bytes,
+1378.90 ms and Vulkan-path median 1372.11 ms, admission bound 7,968,416 bytes,
 and one concurrent source frame. This is software-runner regression evidence,
 not mobile performance or a measured peak allocation/traffic count.
 
