@@ -4,6 +4,7 @@
 #include "latent/reference/ReferenceReconstruct.h"
 #include "latent/runtime/RawBindings.h"
 
+#include <limits>
 #include <memory>
 #include <optional>
 #include <span>
@@ -55,34 +56,33 @@ struct NormalizedRaw {
     bool noiseEstimated = false;
 };
 
-// Conditions on estimated sample geometry, independent of photometric merge
-// compatibility. Multiple conditions can coexist; priors are explicit.
-namespace GeometryIssue {
-inline constexpr std::uint32_t Reference = 1U, Underconstrained = 2U, Ambiguous = 4U,
-    Inconsistent = 8U, InsufficientOverlap = 16U, GlobalPrior = 32U, IdentityPrior = 64U;
-}
-struct GeometryEvidence {
-    float textureSupport = 0;       // Noise-debiased 2D structure score, NOT probability.
-    float cycleErrorPixels = 0;     // Forward/backward consistency in sensor pixels.
-    float distinctCostGap = 0;      // Global tested-basin margin (also on tiles), NOT proof of uniqueness.
-    std::uint32_t issues = 0;
-};
-
 // sourcePosition = referencePosition + displacement, in sensor pixels.
 struct MotionTile {
     float dx = 0.0F, dy = 0.0F;
-    float confidence = 0.0F; // Photometric/consistency compatibility, NOT geometry certainty.
+    float confidence = 0.0F;
     float residual = 0.0F;
 };
 static_assert(sizeof(MotionTile) == 16U);
+enum class GeometryStatus : std::uint32_t { Reference, Estimated, Unobservable, Ambiguous, Inconsistent };
+// A fallback assumption is not an observed displacement or confidence.
+enum class GeometryPrior : std::uint32_t { None, Identity, Global };
+struct RegistrationEvidence {
+    // Conditional linearized guide-noise scale, not an unconditional calibrated
+    // displacement posterior. Includes a conservative cubic-stencil reuse factor.
+    float localizationStdDevPixels = std::numeric_limits<float>::infinity();
+    float cycleErrorPixels = std::numeric_limits<float>::infinity();
+    std::uint32_t supportedGuideSamples = 0;
+    GeometryStatus status = GeometryStatus::Unobservable;
+    GeometryPrior prior = GeometryPrior::None;
+};
 struct AlignmentField {
     imaging::FrameId source{}, reference{};
     imaging::Extent extent{};
     std::uint32_t tileSize = 0U, columns = 0U, rows = 0U;
     MotionTile global{};
     std::vector<MotionTile> tiles;
-    GeometryEvidence globalEvidence{};
-    std::vector<GeometryEvidence> tileEvidence;
+    RegistrationEvidence globalEvidence;
+    std::vector<RegistrationEvidence> evidence;
 };
 
 struct TemporalUncertainty {

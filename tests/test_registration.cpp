@@ -51,16 +51,20 @@ void geometryChecks() {
         s.samples[index]={periodic(static_cast<float>(x)-0.37F,static_cast<float>(y)+0.63F),0.000004F,1,0};
     }
     auto a=reference::alignTemporalRaw(r,s,imaging::FrameId{1},imaging::FrameId{2},policy);
-    std::cout << "geometry periodic_gap=" << a.globalEvidence.distinctCostGap << " texture=" << a.globalEvidence.textureSupport << " issues=" << a.globalEvidence.issues << '\n';
-    check((a.globalEvidence.issues & reference::GeometryIssue::Ambiguous)!=0,"periodic alternatives must not claim unique geometry");
+    check(a.globalEvidence.status == reference::GeometryStatus::Ambiguous,"periodic alternatives must not claim unique geometry");
     for (unsigned seed=0; seed<6; ++seed) {
         std::mt19937 random(seed+113);
         std::normal_distribution<float> noise(0,0.01F);
         for (auto& value:r.samples) value={0.2F+noise(random),0.0001F,1,0};
         for (auto& value:s.samples) value={0.2F+noise(random),0.0001F,1,0};
         a=reference::alignTemporalRaw(r,s,imaging::FrameId{1},imaging::FrameId{2},policy);
-        check((a.globalEvidence.issues & reference::GeometryIssue::IdentityPrior)!=0,"noise must not supply observable 2D geometry");
+        check(a.globalEvidence.prior == reference::GeometryPrior::Identity,"noise must not supply observable 2D geometry");
         check(a.global.dx==0 && a.global.dy==0,"unobservable global motion uses an explicit identity prior");
+        check(!std::isfinite(a.globalEvidence.localizationStdDevPixels),"a prior has no measured localization uncertainty");
+        for (std::size_t i=0; i<a.tiles.size(); ++i) if (a.evidence[i].prior==reference::GeometryPrior::Global) {
+            check(a.tiles[i].dx==a.global.dx && a.tiles[i].dy==a.global.dy,"global prior must be the actual chosen vector");
+            check(!std::isfinite(a.evidence[i].localizationStdDevPixels),"local prior cannot report a measured precision");
+        }
     }
     // A one-dimensional edge constrains only one component (aperture problem).
     for (std::uint32_t y=0; y<r.extent.height; ++y) for (std::uint32_t x=0; x<r.extent.width; ++x) {
@@ -69,12 +73,12 @@ void geometryChecks() {
         s.samples[index]={0.3F+0.1F*std::sin(0.13F*(static_cast<float>(x)-0.7F)),0.00001F,1,0};
     }
     a=reference::alignTemporalRaw(r,s,imaging::FrameId{1},imaging::FrameId{2},policy);
-    check((a.globalEvidence.issues & reference::GeometryIssue::Underconstrained)!=0,"aperture ambiguity must remain explicit");
+    check(a.globalEvidence.status == reference::GeometryStatus::Unobservable,"aperture ambiguity must remain explicit");
     r=observation(imaging::CfaPattern::RGGB,0,0,0,0,1); s=r;
     for (std::uint32_t y=0; y<r.extent.height; y+=2) for (std::uint32_t x=0; x<r.extent.width; x+=2)
         s.samples[static_cast<std::size_t>(y)*r.extent.width+x].usable=0;
     a=reference::alignTemporalRaw(r,s,imaging::FrameId{1},imaging::FrameId{2},policy);
-    check((a.globalEvidence.issues & reference::GeometryIssue::InsufficientOverlap)!=0,"partial CFA clipping cannot alter proxy spectral weights");
+    check(a.globalEvidence.supportedGuideSamples == 0,"partial CFA clipping cannot alter proxy spectral weights");
     check(a.global.confidence==0,"incomplete spectral support cannot certify a warp");
     s=r; s.samples[10].value=std::numeric_limits<float>::quiet_NaN();
     bool rejected=false;
@@ -95,7 +99,7 @@ void geometryChecks() {
         const float dx=ty==1 ? 2.37F : -1.5F;
         const float error=std::hypot(tile.dx-dx,tile.dy-0.3F);
         localMaximum=std::max(localMaximum,error);
-        check(std::isfinite(a.tileEvidence[index].cycleErrorPixels),"finite cycle evidence");
+        check(std::isfinite(a.evidence[index].cycleErrorPixels),"finite cycle evidence");
     }
     std::cout << "geometry local_motion_max_error=" << localMaximum << '\n';
     check(localMaximum<0.3F,"local motion interiors must preserve distinct translations");

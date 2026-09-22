@@ -29,8 +29,8 @@ to a source sampling position. Its field and confidence are separate from the
 warped values. Alignment proxies and pyramids are execution artifacts, not new
 image domains. Photometric merge compatibility is not certainty about geometry:
 texture support, tested alternate basins, forward/backward consistency and any
-identity/global-motion prior remain explicit in the trace. A texture score is
-not a calibrated probability or total uncertainty. Noise, exposure, gain, and
+identity/global-motion prior remain explicit in the trace. A conditional
+localization scale is not a calibrated posterior or total uncertainty. Noise, exposure, gain, and
 lens-shading observations retain
 source and confidence. Noise coordinates are explicit. Radiometric scale must
 propagate variance by the square of that scale.

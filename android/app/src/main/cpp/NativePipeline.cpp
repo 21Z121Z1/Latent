@@ -111,16 +111,27 @@ std::string escape(const std::string& text) {
     return output;
 }
 
+void writeOptionalFinite(std::ostream& json, float value) {
+    if (std::isfinite(value)) json << value;
+    else json << "null"; // Unobservable uncertainty is not a measured zero.
+}
 void writeGeometry(std::ostream& json, const reference::AlignmentField& field) {
-    const auto& g=field.globalEvidence;
-    json << "{\"schemaVersion\":1,\"dx\":" << field.global.dx << ",\"dy\":" << field.global.dy
-         << ",\"textureSupport\":" << g.textureSupport << ",\"cycleErrorPx\":" << g.cycleErrorPixels
-         << ",\"globalBasinGap\":" << g.distinctCostGap << ",\"issues\":" << g.issues << ",\"tiles\":[";
-    for (std::size_t n=0; n<field.tiles.size(); ++n) {
+    const auto& g = field.globalEvidence;
+    json << "{\"schemaVersion\":2,\"dx\":" << field.global.dx << ",\"dy\":" << field.global.dy
+         << ",\"status\":" << static_cast<std::uint32_t>(g.status)
+         << ",\"prior\":" << static_cast<std::uint32_t>(g.prior)
+         << ",\"supportedGuideSamples\":" << g.supportedGuideSamples << ",\"localizationStdDevPx\":";
+    writeOptionalFinite(json, g.localizationStdDevPixels);
+    json << ",\"cycleErrorPx\":"; writeOptionalFinite(json, g.cycleErrorPixels);
+    json << ",\"tiles\":[";
+    for (std::size_t n = 0; n < field.tiles.size(); ++n) {
         if (n) json << ',';
-        const auto& t=field.tiles[n]; const auto& e=field.tileEvidence.at(n);
-        json << '[' << t.dx << ',' << t.dy << ',' << e.textureSupport << ',' << e.cycleErrorPixels
-             << ',' << e.distinctCostGap << ',' << e.issues << ']';
+        const auto& t = field.tiles[n]; const auto& e = field.evidence.at(n);
+        // [dx,dy,status,prior,guideSamples,conditionalStdDevPx,cycleErrorPx]
+        json << '[' << t.dx << ',' << t.dy << ',' << static_cast<std::uint32_t>(e.status)
+             << ',' << static_cast<std::uint32_t>(e.prior) << ',' << e.supportedGuideSamples << ',';
+        writeOptionalFinite(json, e.localizationStdDevPixels); json << ',';
+        writeOptionalFinite(json, e.cycleErrorPixels); json << ']';
     }
     json << "]}";
 }

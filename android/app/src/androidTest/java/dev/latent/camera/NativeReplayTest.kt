@@ -27,12 +27,19 @@ class NativeReplayTest {
         for (index in 0 until 4) {
             val frame = trace.getJSONArray("frames").getJSONObject(index)
             val geometry = frame.getJSONObject("geometry")
-            assertEquals(1, geometry.getInt("schemaVersion"))
-            assertTrue(geometry.getDouble("textureSupport") in 0.0..1.0)
-            assertTrue(geometry.getDouble("cycleErrorPx").isFinite())
+            assertEquals(2, geometry.getInt("schemaVersion"))
+            assertTrue(geometry.getInt("status") in 0..4)
+            assertTrue(geometry.getInt("prior") in 0..2)
+            assertTrue(geometry.getLong("supportedGuideSamples") >= 0)
+            for (name in arrayOf("localizationStdDevPx", "cycleErrorPx")) {
+                assertTrue(geometry.has(name))
+                assertTrue(geometry.isNull(name) || geometry.getDouble(name).isFinite())
+            }
             assertEquals(2, geometry.getJSONArray("tiles").length())
             if (frame.getLong("id") == trace.getLong("referenceId")) {
-                assertEquals(1, geometry.getInt("issues"))
+                assertEquals(0, geometry.getInt("status"))
+                assertEquals(0, geometry.getInt("prior"))
+                assertEquals(0.0, geometry.getDouble("localizationStdDevPx"), 0.0)
                 assertEquals(0.0, geometry.getDouble("dx"), 0.0)
                 assertEquals(0.0, geometry.getDouble("dy"), 0.0)
             }
@@ -57,6 +64,31 @@ class NativeReplayTest {
         }
         assertTrue(maximum-minimum > 10)
         reference.recycle(); replay.recycle(); optimized.recycle()
+    }
+
+    @Test fun unobservableGeometryUsesNullUncertaintyAndExplicitPrior() {
+        val inputs = frames()
+        for (frame in inputs) {
+            val level = (frame.black[0] + 0.2f * (frame.white - frame.black[0])).toInt().toShort()
+            for (y in 0 until frame.height) for (x in 0 until frame.width)
+                frame.pixels.putShort(y * frame.rowStrideBytes + x * 2, level)
+        }
+        val output = image()
+        try {
+            val trace = JSONObject(NativeBridge.processRaw(inputs, output, false, 64L*1024*1024, 0f) { _,_,_ -> true })
+            val frames = trace.getJSONArray("frames")
+            for (index in 0 until frames.length()) {
+                val frame = frames.getJSONObject(index)
+                if (frame.getLong("id") == trace.getLong("referenceId")) continue
+                val geometry = frame.getJSONObject("geometry")
+                assertEquals(2, geometry.getInt("status"))
+                assertEquals(1, geometry.getInt("prior"))
+                assertEquals(0.0, geometry.getDouble("dx"), 0.0)
+                assertEquals(0.0, geometry.getDouble("dy"), 0.0)
+                assertTrue(geometry.isNull("localizationStdDevPx"))
+                assertTrue(geometry.isNull("cycleErrorPx"))
+            }
+        } finally { output.recycle() }
     }
 
     @Test fun cancellationAndInvalidBitmapAreExplicit() {

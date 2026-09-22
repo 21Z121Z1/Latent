@@ -194,8 +194,23 @@ private fun diagnosticSummary(trace: String): String {
         val frame = frames.getJSONObject(index)
         text.appendLine("Frame ${frame.getLong("id")}: ${frame.getLong("accepted")} accepted samples; gain estimated=${frame.getBoolean("gainEstimated")}; noise estimated=${frame.getBoolean("noiseEstimated")}")
         frame.optJSONObject("geometry")?.let { geometry ->
-            text.appendLine(String.format(Locale.ROOT, "Geometry flags: %d; 2D texture score: %.3f; cycle error: %.3f px",
-                geometry.getInt("issues"), geometry.getDouble("textureSupport"), geometry.getDouble("cycleErrorPx")))
+            val status = when (geometry.getInt("status")) {
+                0 -> "reference"
+                1 -> "estimated"
+                2 -> "unobservable"
+                3 -> "ambiguous"
+                4 -> "inconsistent"
+                else -> "unknown"
+            }
+            val prior = when (geometry.getInt("prior")) {
+                0 -> "none"
+                1 -> "identity"
+                2 -> "global"
+                else -> "unknown"
+            }
+            val cycle = if (geometry.isNull("cycleErrorPx")) "unavailable"
+                else String.format(Locale.ROOT, "%.3f px", geometry.getDouble("cycleErrorPx"))
+            text.appendLine("Geometry: $status; prior: $prior; cycle error: $cycle")
         }
     }
     json.optJSONObject("capture")?.let { capture ->
