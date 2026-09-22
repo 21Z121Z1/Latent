@@ -105,6 +105,47 @@ MotionTile search(const Proxy& ref, const Proxy& src, Window window,
     best.confidence = bestCost.coverage / (1.0F + 0.25F * bestCost.value);
     return best;
 }
+// Continuous, noise-weighted Lucas-Kanade refinement for period-averaged
+// RAW guides. Rank-deficient (flat/aperture) windows are unobservable, not an
+// identity-motion observation. Legacy alignment keeps its original behavior.
+MotionTile refineContinuous(const Proxy& ref,const Proxy& src,Window window,MotionTile initial,
+    float limit,float floor) {
+    auto best=initial;auto old=cost(ref,src,window,best.dx,best.dy,floor);
+    float conditionConfidence=0;
+    for(unsigned iteration=0;iteration<8;++iteration) {
+        double xx=0,xy=0,yy=0,bx=0,by=0,samples=0;
+        const auto stride=std::max(1U,std::max(window.x1-window.x0,window.y1-window.y0)/48U);
+        for(auto y=window.y0;y<window.y1;y+=stride)for(auto x=window.x0;x<window.x1;x+=stride) {
+            const auto& r=ref.at(x,y);if(r.usable==0)continue;
+            const float sx=static_cast<float>(x)+best.dx,sy=static_cast<float>(y)+best.dy;
+            const auto value=interpolate(src,sx,sy),left=interpolate(src,sx-0.5F,sy),right=interpolate(src,sx+0.5F,sy);
+            const auto up=interpolate(src,sx,sy-0.5F),down=interpolate(src,sx,sy+0.5F);
+            if(!value||!left||!right||!up||!down)continue;
+            const double delta=static_cast<double>(r.value)-value->value;
+            const double variance=std::max(static_cast<double>(floor),static_cast<double>(r.variance)+value->variance);
+            const double weight=1.0/(variance*std::max(1.0,std::abs(delta)/std::sqrt(variance)/3.0));
+            const double gx=right->value-left->value,gy=down->value-up->value;
+            xx+=weight*gx*gx;xy+=weight*gx*gy;yy+=weight*gy*gy;
+            bx+=weight*gx*delta;by+=weight*gy*delta;samples+=1;
+        }
+        const double det=xx*yy-xy*xy,tr=xx+yy;
+        if(samples<8 || tr/samples<1e-3 || det<=tr*tr*1e-4) {best.confidence=0;return best;}
+        conditionConfidence=static_cast<float>(std::min(1.0,det/(tr*tr)*8));
+        float dx=static_cast<float>(std::clamp((yy*bx-xy*by)/det,-0.5,0.5));
+        float dy=static_cast<float>(std::clamp((xx*by-xy*bx)/det,-0.5,0.5));
+        if(std::abs(dx)+std::abs(dy)<0.0005F)break;
+        bool improved=false;
+        for(unsigned trial=0;trial<5;++trial) {
+            const float nx=std::clamp(best.dx+dx,-limit,limit),ny=std::clamp(best.dy+dy,-limit,limit);
+            const auto next=cost(ref,src,window,nx,ny,floor);
+            if(next.value<old.value) {best.dx=nx;best.dy=ny;old=next;improved=true;break;}
+            dx*=0.5F;dy*=0.5F;
+        }
+        if(!improved)break;
+    }
+    best.residual=old.value;best.confidence=conditionConfidence*old.coverage/(1+0.25F*old.value);
+    return best;
+}
 // Keep spatially distinct hypotheses through ambiguous coarse levels. A
 // single winning translation can lock onto a different texture period.
 std::vector<MotionTile> beamSearch(const Proxy& ref, const Proxy& src,
@@ -137,16 +178,11 @@ std::vector<MotionTile> beamSearch(const Proxy& ref, const Proxy& src,
 }
 }  // namespace
 
-AlignmentField alignTemporalRaw(const NormalizedRaw& reference, const NormalizedRaw& source,
-    imaging::FrameId referenceId, imaging::FrameId sourceId, const TemporalPolicy& policy) {
-    validateTemporalPolicy(policy);
-    if ((source.extent.width != reference.extent.width || source.extent.height != reference.extent.height) || source.cfa != reference.cfa ||
-        reference.extent.width < 2U || reference.extent.height < 2U ||
-        source.samples.size() != source.extent.pixelCount() || reference.samples.size() != source.samples.size()) {
-        throw std::invalid_argument("alignment requires compatible sensor coordinates");
-    }
+namespace {
+AlignmentField alignProxies(Proxy reference, Proxy source, imaging::Extent rawExtent,
+    float pixelStep, imaging::FrameId referenceId, imaging::FrameId sourceId, const TemporalPolicy& policy, bool continuous = false) {
     AlignmentField field{};
-    field.source = sourceId; field.reference = referenceId; field.extent = reference.extent;
+    field.source = sourceId; field.reference = referenceId; field.extent = rawExtent;
     field.tileSize = policy.tileSize;
     field.columns = (field.extent.width + field.tileSize - 1U) / field.tileSize;
     field.rows = (field.extent.height + field.tileSize - 1U) / field.tileSize;
@@ -157,8 +193,8 @@ AlignmentField alignTemporalRaw(const NormalizedRaw& reference, const Normalized
         return field;
     }
     std::vector<Proxy> rp, sp;
-    rp.push_back(proxy(reference)); sp.push_back(proxy(source));
-    float scale = 2.0F;
+    rp.push_back(std::move(reference)); sp.push_back(std::move(source));
+    float scale = pixelStep;
     while (std::min(rp.back().width, rp.back().height) >= 16U &&
            static_cast<float>(policy.maximumDisplacement) / scale > 4.0F) {
         rp.push_back(downsample(rp.back())); sp.push_back(downsample(sp.back())); scale *= 2.0F;
@@ -175,7 +211,7 @@ AlignmentField alignTemporalRaw(const NormalizedRaw& reference, const Normalized
             scale *= 0.5F;
         }
     }
-    const float limit = static_cast<float>(policy.maximumDisplacement) * 0.5F;
+    const float limit = static_cast<float>(policy.maximumDisplacement) / pixelStep;
     const auto& r = rp.front(); const auto& s = sp.front();
     global.residual = 1.0e20F;
     for (const auto& h : hypotheses) {
@@ -194,14 +230,28 @@ AlignmentField alignTemporalRaw(const NormalizedRaw& reference, const Normalized
             if (refined.residual < global.residual) global = refined;
         }
     }
-    field.global = global; field.global.dx *= 2.0F; field.global.dy *= 2.0F;
+    if(continuous) global=refineContinuous(r,s,{0,0,r.width,r.height},global,limit,policy.varianceFloor);
+    field.global = global; field.global.dx *= pixelStep; field.global.dy *= pixelStep;
     for (std::uint32_t ty = 0; ty < field.rows; ++ty) for (std::uint32_t tx = 0; tx < field.columns; ++tx) {
-        const auto x0 = tx * field.tileSize / 2U, y0 = ty * field.tileSize / 2U;
-        const auto x1 = std::min(r.width, x0 + field.tileSize / 2U);
-        const auto y1 = std::min(r.height, y0 + field.tileSize / 2U);
+        const auto step = static_cast<std::uint32_t>(pixelStep);
+        const auto x0 = std::min(r.width, tx * field.tileSize / step), y0 = std::min(r.height, ty * field.tileSize / step);
+        const auto x1 = std::min(r.width, x0 + std::max(1U,field.tileSize / step));
+        const auto y1 = std::min(r.height, y0 + std::max(1U,field.tileSize / step));
         auto tile = search(r, s, {x0, y0, x1, y1}, global, 2, 1.0F, limit, policy.varianceFloor);
         tile = search(r, s, {x0, y0, x1, y1}, tile, 4, 0.125F, limit, policy.varianceFloor);
-        tile.dx *= 2.0F; tile.dy *= 2.0F;
+        if(continuous) {
+            tile=refineContinuous(r,s,{x0,y0,x1,y1},tile,limit,policy.varianceFloor);
+            // Forward/backward consistency on the transported guide window.
+            const auto clampX=[&](float x){return static_cast<std::uint32_t>(std::clamp(x,0.0F,static_cast<float>(s.width)));};
+            const auto clampY=[&](float y){return static_cast<std::uint32_t>(std::clamp(y,0.0F,static_cast<float>(s.height)));};
+            const Window reverseWindow{clampX(static_cast<float>(x0)+tile.dx),clampY(static_cast<float>(y0)+tile.dy),
+                clampX(static_cast<float>(x1)+tile.dx),clampY(static_cast<float>(y1)+tile.dy)};
+            const auto back=refineContinuous(s,r,reverseWindow,{-tile.dx,-tile.dy,1,0},limit,policy.varianceFloor);
+            const float ex=(tile.dx+back.dx)*pixelStep,ey=(tile.dy+back.dy)*pixelStep;
+            const float consistency=std::max(0.0F,1.0F-(ex*ex+ey*ey)/4.0F);
+            tile.confidence=std::min(tile.confidence,back.confidence)*consistency*consistency;
+        }
+        tile.dx *= pixelStep; tile.dy *= pixelStep;
         field.tiles[static_cast<std::size_t>(ty) * field.columns + tx] = tile;
     }
     // Conservative spatial-consistency confidence. Never smooth displacements
@@ -220,5 +270,25 @@ AlignmentField alignTemporalRaw(const NormalizedRaw& reference, const Normalized
         field.tiles[i].confidence /= 1.0F + 0.25F * mismatch / std::max(neighbors, 1.0F);
     }
     return field;
+}
+} // namespace
+AlignmentField alignTemporalRaw(const NormalizedRaw& reference,const NormalizedRaw& source,
+    imaging::FrameId referenceId,imaging::FrameId sourceId,const TemporalPolicy& policy) {
+    validateTemporalPolicy(policy);
+    if(source.extent!=reference.extent || source.cfa!=reference.cfa || reference.extent.width<2 || reference.extent.height<2 ||
+       source.samples.size()!=source.extent.pixelCount() || reference.samples.size()!=source.samples.size())
+        throw std::invalid_argument("alignment requires compatible sensor coordinates");
+    return alignProxies(proxy(reference),proxy(source),reference.extent,2,referenceId,sourceId,policy);
+}
+AlignmentField alignRawGuides(const AlignmentGuide& reference,const AlignmentGuide& source,
+    imaging::Extent rawExtent,imaging::FrameId referenceId,imaging::FrameId sourceId,const TemporalPolicy& policy) {
+    validateTemporalPolicy(policy);
+    if(reference.extent!=source.extent || reference.pixelStep!=source.pixelStep || reference.pixelStep==0 ||
+       reference.samples.size()!=reference.extent.pixelCount() || source.samples.size()!=reference.samples.size() ||
+       reference.extent.width<2 || reference.extent.height<2)
+        throw std::invalid_argument("invalid RAW registration guide");
+    return alignProxies({reference.extent.width,reference.extent.height,reference.samples},
+        {source.extent.width,source.extent.height,source.samples},rawExtent,
+        static_cast<float>(reference.pixelStep),referenceId,sourceId,policy,true);
 }
 }  // namespace latent::reference

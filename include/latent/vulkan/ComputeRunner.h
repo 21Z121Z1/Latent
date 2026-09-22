@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <memory>
 #include <span>
+#include <string>
 #include <vector>
 
 #include <volk.h>
@@ -18,6 +19,8 @@ public:
         VkBuffer handle = VK_NULL_HANDLE;
         VkDeviceMemory memory = VK_NULL_HANDLE;
         VkDeviceSize size = 0U;
+        VkDeviceSize allocationSize = 0U;
+        void* mapped = nullptr;
     };
 
     // Returns nullptr when no Vulkan device is available; the detail string
@@ -34,6 +37,10 @@ public:
 
     void upload(const Buffer& buffer, const void* data, std::size_t byteCount);
     void download(const Buffer& buffer, void* out, std::size_t byteCount);
+
+    // Opt-in instrumentation. -1 means unavailable/disabled, never zero-as-unknown.
+    [[nodiscard]] bool enableTimestamps();
+    [[nodiscard]] double gpuMilliseconds() const { return timestampsEnabled_ ? gpuMilliseconds_ : -1.0; }
 
     // All bindings are storage buffers, bound in declaration order starting
     // at set 0 / binding 0. `pushConstantSize` may be zero.
@@ -57,6 +64,9 @@ private:
         VkPipeline pipeline = VK_NULL_HANDLE;
         VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
         VkDescriptorSetLayout setLayout = VK_NULL_HANDLE;
+        VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
+        VkCommandBuffer command = VK_NULL_HANDLE;
+        std::uint32_t bindingCount = 0, pushConstantSize = 0;
     };
 
     [[nodiscard]] const PipelineEntry& findPipeline(VkPipeline pipeline) const;
@@ -68,6 +78,12 @@ private:
     VkDescriptorPool descriptorPool_ = VK_NULL_HANDLE;
     std::uint32_t queueFamily_ = 0U;
     std::vector<PipelineEntry> pipelines_;
+    VkFence fence_ = VK_NULL_HANDLE;
+    VkQueryPool timestampPool_ = VK_NULL_HANDLE;
+    std::uint32_t timestampBits_ = 0;
+    float timestampPeriod_ = 0;
+    double gpuMilliseconds_ = 0;
+    bool timestampsEnabled_ = false;
 };
 
 }  // namespace latent::vulkan

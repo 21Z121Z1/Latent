@@ -56,6 +56,12 @@ struct NormalizedRaw {
 };
 
 // sourcePosition = referencePosition + displacement, in sensor pixels.
+// Low-resolution balanced RAW guide, in original buffer coordinates.
+struct AlignmentGuide {
+    imaging::Extent extent{};
+    std::uint32_t pixelStep = 1;
+    std::vector<TemporalSample> samples;
+};
 struct MotionTile {
     float dx = 0.0F, dy = 0.0F;
     float confidence = 0.0F;
@@ -103,6 +109,9 @@ void validateTemporalPolicy(const TemporalPolicy& policy);
 [[nodiscard]] ReferenceSelection selectBurstReference(
     const imaging::RawBurst& burst, const runtime::HostRawBindings& bindings,
     const TemporalPolicy& policy, std::optional<imaging::FrameId> requested = {});
+[[nodiscard]] AlignmentField alignRawGuides(const AlignmentGuide&, const AlignmentGuide&,
+    imaging::Extent rawExtent, imaging::FrameId referenceId, imaging::FrameId sourceId,
+    const TemporalPolicy&);
 [[nodiscard]] AlignmentField alignTemporalRaw(
     const NormalizedRaw& reference, const NormalizedRaw& source,
     imaging::FrameId referenceId, imaging::FrameId sourceId,

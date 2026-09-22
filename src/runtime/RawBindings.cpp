@@ -21,6 +21,10 @@ imaging::RawValidation validateRawView(const RawFrameView& view) {
         storage.rowStridePixels < storage.extent.width) {
         return {false, "RAW view has an invalid extent or stride"};
     }
+    if (view.metadata->sampling) {
+        const auto sampling = imaging::validateSampling(*view.metadata->sampling, storage.extent);
+        if (!sampling.valid) return {false, sampling.message};
+    }
     const auto required = static_cast<std::uint64_t>(storage.rowStridePixels) *
                           (storage.extent.height - 1U) + storage.extent.width;
     if (storage.pixels.size() < required) return {false, "RAW view storage is too short"};
