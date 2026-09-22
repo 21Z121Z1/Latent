@@ -1,0 +1,53 @@
+name: public research inputs
+on:
+  push:
+    branches: [automation/latent-object-transfer-20260922]
+permissions:
+  contents: read
+jobs:
+  public-inputs:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Retrieve primary papers and dataset directory metadata
+        run: |
+          mkdir inputs
+          python - <<'PY'
+          import hashlib, json, pathlib, urllib.parse, urllib.request
+          from html.parser import HTMLParser
+          out = pathlib.Path('inputs')
+          records = []
+          def get(url, name):
+              with urllib.request.urlopen(url, timeout=90) as response:
+                  data = response.read(90_000_001)
+                  assert len(data) <= 90_000_000
+                  final_url = response.url
+              (out/name).write_bytes(data)
+              records.append({'name':name,'requested_url':url,'resolved_url':final_url,
+                  'bytes':len(data),'sha256':hashlib.sha256(data).hexdigest()})
+              return data
+          class Links(HTMLParser):
+              def __init__(self): super().__init__(); self.links=[]
+              def handle_starttag(self, tag, attrs):
+                  if tag == 'a':
+                      href = dict(attrs).get('href','')
+                      if href: self.links.append(href)
+          page = get('https://hdrplusdata.org/','hdrplus-index.html')
+          links = Links(); links.feed(page.decode())
+          pdfs = [urllib.parse.urljoin('https://hdrplusdata.org/', x) for x in links.links if x.lower().endswith('.pdf')]
+          assert pdfs, 'No primary paper link found'
+          for i,url in enumerate(pdfs):
+              data=get(url, 'hdrplus-paper-'+str(i)+'.pdf')
+              assert data.startswith(b'%PDF-'), url
+          get('https://storage.googleapis.com/gweb-research2023-media/pubtools/5211.pdf','wronski2019.pdf')
+          get('https://hdrplusdata.org/dataset.html','dataset.html')
+          get('https://storage.googleapis.com/storage/v1/b/hdrplusdata/o?prefix=20171106_subset%2F&maxResults=30','dataset-list.json')
+          (out/'provenance.json').write_text(json.dumps(records,indent=2)+'\n')
+          print(json.dumps(records,indent=2))
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: public-research-inputs-${{ github.sha }}
+          path: inputs/
+          if-no-files-found: error
+          retention-days: 1
