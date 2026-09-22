@@ -1,6 +1,6 @@
 package dev.latent.camera
 
-import androidx.compose.ui.test.assertExists
+import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
@@ -19,6 +19,6 @@ class ReplayUiTest {
             compose.onAllNodesWithTag("result_image").fetchSemanticsNodes().isNotEmpty() ||
                 compose.onAllNodesWithTag("processing_error").fetchSemanticsNodes().isNotEmpty()
         }
-        compose.onNodeWithTag("result_image").assertExists()
+        compose.onNodeWithTag("result_image").assertIsDisplayed()
     }
 }

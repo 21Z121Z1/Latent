@@ -15,8 +15,8 @@ emulator -avd latent-fixture -no-window -no-snapshot -no-audio -no-boot-anim \
     >build-host/android-emulator.log 2>&1 &
 pid=$!
 cleanup() {
-    adb logcat -d >build-host/android-logcat.log 2>&1 || true
-    adb exec-out screencap -p >build-host/android-screenshot.png 2>/dev/null || true
+    adb logcat -d >"$root/build-host/android-logcat.log" 2>&1 || true
+    adb exec-out screencap -p >"$root/build-host/android-screenshot.png" 2>/dev/null || true
     adb emu kill >/dev/null 2>&1 || true
     kill "$pid" 2>/dev/null || true
 }
