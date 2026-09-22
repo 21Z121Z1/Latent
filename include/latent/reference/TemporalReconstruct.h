@@ -4,6 +4,7 @@
 #include "latent/reference/ReferenceReconstruct.h"
 #include "latent/runtime/RawBindings.h"
 
+#include <limits>
 #include <memory>
 #include <optional>
 #include <span>
@@ -62,12 +63,23 @@ struct MotionTile {
     float residual = 0.0F;
 };
 static_assert(sizeof(MotionTile) == 16U);
+enum class GeometryStatus : std::uint32_t { Reference, Estimated, Unobservable, Ambiguous, Inconsistent };
+struct RegistrationEvidence {
+    // Conditional linearized guide-noise scale, not an unconditional calibrated
+    // displacement posterior. Includes a conservative cubic-stencil reuse factor.
+    float localizationStdDevPixels = std::numeric_limits<float>::infinity();
+    float cycleErrorPixels = std::numeric_limits<float>::infinity();
+    std::uint32_t supportedGuideSamples = 0;
+    GeometryStatus status = GeometryStatus::Unobservable;
+};
 struct AlignmentField {
     imaging::FrameId source{}, reference{};
     imaging::Extent extent{};
     std::uint32_t tileSize = 0U, columns = 0U, rows = 0U;
     MotionTile global{};
     std::vector<MotionTile> tiles;
+    RegistrationEvidence globalEvidence;
+    std::vector<RegistrationEvidence> evidence;
 };
 
 struct TemporalUncertainty {
