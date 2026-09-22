@@ -5,25 +5,41 @@ on:
 permissions:
   contents: read
 jobs:
-  inputs:
+  import:
     runs-on: ubuntu-24.04
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           fetch-depth: 0
           persist-credentials: false
-      - name: Export pinned source history
+      - name: Import verified source objects to isolated staging ref
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_HEAD: 7af2f243d395d802831de25fc72245746fe601a1
+          EXPECTED_TREE: 0da06c91e27093553b1ceb926a886b2d7d6e539b
+          BUNDLE_SHA256: c4995137eabb177fe1a51606bd494376a460c395db170e7e655666926ef8ad61
+          BLOB_PARTS: 53ad6b7f856e00c89ec0e63a8f16201f9c2e04f4 47dd11ea7ab60a6838cd79e829d049907791ca9a 2ca90510669aee8bc365894dc27352e7e06c761c
         run: |
-          mkdir -p "$RUNNER_TEMP/joint-raw-inputs"
+          set -eu
+          python3 - <<'PY'
+          import base64, hashlib, json, os, pathlib, subprocess
+          parts=[]
+          for blob in os.environ['BLOB_PARTS'].split():
+              data=json.loads(subprocess.check_output(['gh','api',f'repos/21Z121Z1/Latent/git/blobs/{blob}']))
+              parts.append(base64.b64decode(data['content']))
+          payload=base64.b64decode(b''.join(parts), validate=True)
+          assert hashlib.sha256(payload).hexdigest()==os.environ['BUNDLE_SHA256'], 'bundle checksum mismatch'
+          pathlib.Path(os.environ['RUNNER_TEMP'],'implementation.bundle').write_bytes(payload)
+          PY
           git fetch origin e999b37a10b2c722a59636025081a0b5ba408acd 0a6a60639fdd71e4af5632b139384eb5d3bed512
-          git update-ref refs/heads/export-grouped e999b37a10b2c722a59636025081a0b5ba408acd
-          git update-ref refs/heads/export-geometry 0a6a60639fdd71e4af5632b139384eb5d3bed512
-          git update-ref refs/heads/export-main 3bab36689c5978ffc57b83fced040168238ca322
-          git bundle create "$RUNNER_TEMP/joint-raw-inputs/latent-reconcile.bundle" refs/heads/export-grouped refs/heads/export-geometry refs/heads/export-main
-          sha256sum "$RUNNER_TEMP/joint-raw-inputs/latent-reconcile.bundle" > "$RUNNER_TEMP/joint-raw-inputs/SHA256SUMS"
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: joint-raw-inputs
-          retention-days: 7
-          if-no-files-found: error
-          path: ${{ runner.temp }}/joint-raw-inputs/
+          git bundle verify "$RUNNER_TEMP/implementation.bundle"
+          git fetch "$RUNNER_TEMP/implementation.bundle" HEAD
+          test "$(git rev-parse FETCH_HEAD)" = "$EXPECTED_HEAD"
+          test "$(git rev-parse "$EXPECTED_HEAD^{tree}")" = "$EXPECTED_TREE"
+          git merge-base --is-ancestor 3bab36689c5978ffc57b83fced040168238ca322 "$EXPECTED_HEAD"
+          git merge-base --is-ancestor e999b37a10b2c722a59636025081a0b5ba408acd "$EXPECTED_HEAD"
+          auth=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)
+          git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $auth" push origin "$EXPECTED_HEAD:refs/heads/automation/jsr-imported"
+          printf 'Imported HEAD=%s TREE=%s\n' "$EXPECTED_HEAD" "$EXPECTED_TREE"
