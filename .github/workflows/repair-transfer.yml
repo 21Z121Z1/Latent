@@ -1,0 +1,59 @@
+name: repair-transfer
+on:
+  push:
+    branches: [automation/public-research-inputs-20260922]
+    paths: [.github/workflows/repair-transfer.yml]
+permissions:
+  contents: write
+jobs:
+  repair:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+      - name: Preserve failed transport input for byte comparison
+        run: |
+          mkdir -p /tmp/transfer
+          cp campaign-transfer.json /tmp/transfer/input.json
+      - name: Repair transcription and verify original source hashes
+        run: |
+          python3 - <<'PY'
+          import base64, gzip, hashlib, json, pathlib, subprocess
+          def git(*args): return subprocess.check_output(['git',*args],text=True).strip()
+          payload=json.loads(pathlib.Path('/tmp/transfer/input.json').read_text())
+          text=payload['patch_gzip_base64']
+          corrections=[('md+qPaPqBqA0l','md+qPaPqB0l'),('XRvgaVhiHVB','XRvgaVgiHVB'),('Cn1fa0K5HDkne','Cn1fa0KHDkne'),('Q65hdram6pTXip','Q65hdram+TXip')]
+          for old,new in corrections:
+              assert text.count(old)==1, old
+              text=text.replace(old,new)
+          assert hashlib.sha256(text.encode()).hexdigest()=='f55a6074b28b9f8553416e22c105918963d2c83dd688411ddcf57ce9b14bea5e', 'remaining transcription error'
+          patch=gzip.decompress(base64.b64decode(text,validate=True))
+          assert hashlib.sha256(patch).hexdigest()==payload['sha256']=='9c60f1a836c8c67dedee4137bc785a015a6f292997d9507867563b42bdc703e7'
+          assert payload['base']=='a13a46a1f7c5d2eeec9a170ea6bd1a14f159d0c7'
+          assert git('rev-parse','origin/feat/continuous-raw-reconstruction')==payload['base']
+          pathlib.Path('/tmp/campaign.patch').write_bytes(patch)
+          git('checkout','--detach',payload['base'])
+          git('apply','--check','--index','/tmp/campaign.patch')
+          git('apply','--index','/tmp/campaign.patch')
+          assert git('write-tree')==payload['tree']=='83fba9624727948d1b81fb7f55f644ec3f73f6b6'
+          git('diff','--cached','--check')
+          git('config','user.name','Latent campaign transport')
+          git('config','user.email','41898282+github-actions[bot]@users.noreply.github.com')
+          git('commit','-m',payload['message'])
+          commit=git('rev-parse','HEAD')
+          git('push','origin','HEAD:refs/heads/automation/campaign-staging')
+          root=pathlib.Path('/tmp/transfer')
+          git('bundle','create',str(root/'latent.bundle'),'HEAD')
+          record={'base':payload['base'],'tree':payload['tree'],'commit':commit,'patch_sha256':payload['sha256']}
+          (root/'receipt.json').write_text(json.dumps(record,indent=2))
+          print(json.dumps(record))
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: repaired-transfer-${{ github.sha }}
+          retention-days: 7
+          if-no-files-found: error
+          path: /tmp/transfer/
