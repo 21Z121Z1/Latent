@@ -4,6 +4,12 @@ set -euo pipefail
 root=$(cd "$(dirname "$0")/../.." && pwd)
 cd "$root"
 export PATH="$ANDROID_HOME/platform-tools:$ANDROID_HOME/emulator:$PATH"
+avd_home="${ANDROID_AVD_HOME:-${ANDROID_SDK_HOME:-$HOME/.android}/avd}"
+if [ ! -f "$avd_home/latent-fixture.ini" ]; then
+    echo "Android AVD latent-fixture is missing from $avd_home" >&2
+    emulator -list-avds >&2 || true
+    exit 1
+fi
 emulator -avd latent-fixture -no-window -no-snapshot -no-audio -no-boot-anim \
     -gpu swiftshader_indirect -camera-back none -camera-front none -memory 2048 -cores 2 \
     >build-host/android-emulator.log 2>&1 &

@@ -41,8 +41,12 @@ jobs:
         run: ./gradlew --no-daemon --stacktrace --max-workers=2 assembleDebug testDebugUnitTest lintDebug
       - name: Install fixture-only emulator
         run: |
+          export ANDROID_AVD_HOME="$RUNNER_TEMP/latent-avd"
+          mkdir -p "$ANDROID_AVD_HOME"
+          echo "ANDROID_AVD_HOME=$ANDROID_AVD_HOME" >> "$GITHUB_ENV"
           sdkmanager 'emulator' 'system-images;android-35;google_apis;x86_64' </dev/null
           echo no | avdmanager create avd --force --name latent-fixture --package 'system-images;android-35;google_apis;x86_64' --device pixel_2
+          test -f "$ANDROID_AVD_HOME/latent-fixture.ini"
           test -e /dev/kvm
           sudo chmod a+rw /dev/kvm
       - name: Exercise actual APK and JNI on emulator
