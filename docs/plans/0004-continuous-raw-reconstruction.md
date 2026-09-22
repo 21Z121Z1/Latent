@@ -1,7 +1,10 @@
 # Plan 0004: Continuous observation reconstruction
 
-Status: Active. Intentionally stacked on PR #17, reviewed base
-`a13a46a1f7c5d2eeec9a170ea6bd1a14f159d0c7`, while it remains unmerged.
+Status: Active. PR #18 is intentionally stacked on unmerged PR #17 at
+`a13a46a1f7c5d2eeec9a170ea6bd1a14f159d0c7`. PR #19 reconciles the parallel
+registration increment on PR #18 (`3d5cdfcba89f295fa6be79653e0a1793a4073109`)
+with a non-rewriting merge. The cubic guide is the only canonical solver;
+the superseded bilinear implementation is not retained as another backend.
 Scope: continuous registration and direct, noise-aware sample reconstruction;
 capture/export/production increments follow their own applicable gates.
 
@@ -9,7 +12,7 @@ capture/export/production increments follow their own applicable gates.
 
 The coarse multi-hypothesis pyramid remains. Conditioned, bounded robust
 Gauss-Newton on a cardinal-cubic Bayer-cell guide replaces quarter-pixel search.
-Incomplete Bayer cells do not enter that guide; edge windows retain enough real
+Incomplete or partially clipped Bayer cells do not enter that guide; edge windows retain enough real
 support. This guide is not a resampled RAW observation or a fusion backend.
 
 Registration evidence separates photometric agreement from geometry:
@@ -19,6 +22,14 @@ regions are not declared geometrically observable. Periodic alternatives remain
 ambiguous. Inconsistent local cycles reduce fusion confidence. The finite search
 cannot certify global uniqueness; the localization scale is not an unconditional
 calibrated posterior. Thresholds are Latent-owned conservative policy.
+
+Unobservable global motion uses an explicit identity prior; unobservable local
+motion uses the chosen global prior. Photometric compatibility is recomputed at
+the actual prior vector, not at an abandoned noisy optimum. Unknown localization
+and cycle errors stay unavailable, not zero. Native Android JSON schema 2 exposes
+status, prior, guide support, conditional localization, cycle error and every
+tile; installed-APK tests exercise both finite and null evidence. Admission uses
+the actual evidence type sizes, not a hand-maintained per-tile constant.
 
 Independent continuous sinusoidal irradiance is analytically integrated over a
 unit-square photosite. The phase sweep covers all Bayer patterns. Poisson/read
@@ -33,11 +44,23 @@ RMS 0.00376 px. Sixteen low-light realizations: RMS 0.12725 px, maximum 0.16126 
 all errors fell inside the reported conditional 3-sigma scale in this experiment.
 This is not proof of universal uncertainty calibration.
 
-Local strict Release/SwiftShader: 10/10 tests, including existing nonlinear
-texture, motion, clipping, radiometry, lifetime and CPU/Vulkan differential
-properties and the final finite-input/admission checks. Exact-head Actions must
-pass before this increment is called verified. Actions evidence is bound in the PR,
-not inferred from the stacked base's green runs.
+A second independent continuous-irradiance family covers four CFA patterns,
+large displacement, Poisson/read noise, periodic and aperture ambiguity, noisy
+flat fields, partial CFA clipping, piecewise local motion and invalid inputs.
+On the same 32 observations, endpoint RMS (clean/noisy) is 0.128452/0.130264 px
+for a13, 0.016419/0.086326 for the superseded bilinear increment, and
+0.009067/0.048378 for the unified cubic implementation. Cubic fitting improves
+accuracy but its host phase-sweep cost is approximately 1.8x bilinear. Neither
+fixture family or existing difficult assertion was weakened in reconciliation.
+The existing nonlinear-texture estimate is 0.815578/-1.23739 px for true
+0.75/-1.25 px; it is not exact. Static 8-frame MSE ratio is 0.127311, effective
+support 7.91129; uncertainty remains conditional on adaptive fusion weights.
+
+Local strict Release no-Vulkan 9/9 and SwiftShader 11/11 passed on the unified
+source. Exact-head Actions must pass before this increment is called verified;
+Android schema/null-prior changes require new assemble/lint/JVM/installed-APK
+instrumentation. Actions evidence is bound in the PR, not inferred from the
+stacked base or superseded increment's green runs.
 
 Direct sample reconstruction, conditional SR, explicit per-sample visibility,
 computational RAW export, expanded capture policy, and reduced GPU traffic remain

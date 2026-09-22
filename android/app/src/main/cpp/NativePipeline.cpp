@@ -111,6 +111,31 @@ std::string escape(const std::string& text) {
     return output;
 }
 
+void writeOptionalFinite(std::ostream& json, float value) {
+    if (std::isfinite(value)) json << value;
+    else json << "null"; // Unobservable uncertainty is not a measured zero.
+}
+void writeGeometry(std::ostream& json, const reference::AlignmentField& field) {
+    const auto& g = field.globalEvidence;
+    json << "{\"schemaVersion\":2,\"dx\":" << field.global.dx << ",\"dy\":" << field.global.dy
+         << ",\"status\":" << static_cast<std::uint32_t>(g.status)
+         << ",\"prior\":" << static_cast<std::uint32_t>(g.prior)
+         << ",\"supportedGuideSamples\":" << g.supportedGuideSamples << ",\"localizationStdDevPx\":";
+    writeOptionalFinite(json, g.localizationStdDevPixels);
+    json << ",\"cycleErrorPx\":"; writeOptionalFinite(json, g.cycleErrorPixels);
+    json << ",\"tiles\":[";
+    for (std::size_t n = 0; n < field.tiles.size(); ++n) {
+        if (n) json << ',';
+        const auto& t = field.tiles[n]; const auto& e = field.evidence.at(n);
+        // [dx,dy,status,prior,guideSamples,conditionalStdDevPx,cycleErrorPx]
+        json << '[' << t.dx << ',' << t.dy << ',' << static_cast<std::uint32_t>(e.status)
+             << ',' << static_cast<std::uint32_t>(e.prior) << ',' << e.supportedGuideSamples << ',';
+        writeOptionalFinite(json, e.localizationStdDevPixels); json << ',';
+        writeOptionalFinite(json, e.cycleErrorPixels); json << ']';
+    }
+    json << "]}";
+}
+
 class BitmapPixels {
 public:
     BitmapPixels(JNIEnv* e, jobject bitmap, const imaging::Extent extent) : env_(e), bitmap_(bitmap) {
@@ -303,7 +328,9 @@ jstring process(JNIEnv* e, jobjectArray inputs, jobject bitmap, jboolean vk, jlo
         const auto& frame = result.trace.frames[n]; const auto& contribution = result.scene.lineage->contributions[n];
         json << "{\"id\":" << frame.frame.value << ",\"gainEstimated\":" << (frame.gainEstimated ? "true" : "false")
              << ",\"noiseEstimated\":" << (frame.noiseEstimated ? "true" : "false") << ",\"radiometricConfidence\":" << frame.radiometricConfidence
-             << ",\"accepted\":" << contribution.acceptedSamples << ",\"regions\":[";
+             << ",\"geometry\":";
+        writeGeometry(json,frame.alignment);
+        json << ",\"accepted\":" << contribution.acceptedSamples << ",\"regions\":[";
         for (std::size_t r = 0; r < contribution.regions.size(); ++r) {
             if (r) json << ',';
             const auto& region = contribution.regions[r];
