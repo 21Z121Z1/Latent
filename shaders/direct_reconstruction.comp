@@ -1,0 +1,116 @@
+#version 450
+// FP32 camera-RGB evidence. CFA interpretation is canonical CPU normalization;
+// the shader receives validated channel IDs, never a second layout enum.
+layout(local_size_x=64) in;
+struct Evidence {float value;float variance;uint channel;uint valid;};
+struct Anchor {vec4 mean;vec4 noise;vec4 spatial;vec4 kernelMetric;};
+struct Accumulator {vec4 value;vec4 weight;vec4 variance;vec4 frameWeightSquared;vec4 nearWeight;vec4 referenceWeight;};
+struct State {Anchor anchor;Accumulator accum;};
+struct Pixel {vec4 rgb;vec4 variance;vec4 effectiveFrames;vec4 confidence;};
+layout(std430,binding=0) readonly buffer Raw {Evidence raw[];};
+layout(std430,binding=1) readonly buffer Warp {vec4 warp[];};
+layout(std430,binding=2) buffer States {State state[];};
+layout(std430,binding=3) writeonly buffer Output {Pixel outputPixel[];};
+layout(push_constant) uniform Push {
+    uvec4 counts; // count, basePixel, phase (0 begin+reference, 1 add, 2 finish), reserved
+    uvec4 tile; // x,y,w,h
+    uvec4 geometry; // radius x,y,correlated noise,reserved
+    vec4 policy; // detail sigma, residual cutoff, alias allowance, variance floor
+    vec4 policy2; // minimum confidence, fallback sigma, reserved,reserved
+} p;
+struct Stats {vec3 mean;vec3 noise;vec3 spatial;vec3 weight;vec3 varianceSum;vec3 stddevSum;};
+Stats gather(vec4 w,vec4 kernelMetric,bool fine) {
+    precise Stats s=Stats(vec3(0),vec3(0),vec3(0),vec3(0),vec3(0),vec3(0));
+    ivec2 center=ivec2(floor(w.xy));
+    ivec2 lo=max(ivec2(p.tile.xy),center-ivec2(p.geometry.xy));
+    ivec2 hi=min(ivec2(p.tile.xy+p.tile.zw)-1,center+ivec2(p.geometry.xy)+1);
+    float inv=1.0/(p.policy2.y*p.policy2.y);
+    for(int y=lo.y;y<=hi.y;++y) for(int x=lo.x;x<=hi.x;++x) {
+        uint index=uint(y-int(p.tile.y))*p.tile.z+uint(x-int(p.tile.x));
+        Evidence a=raw[index];
+        if(a.valid==0) continue;
+        uint c=a.channel==3?2:(a.channel==0?0:1);
+        vec2 d=vec2(x,y)-w.xy;
+        precise float distance=fine ? d.x*d.x*kernelMetric.x+2.0*d.x*d.y*kernelMetric.y+d.y*d.y*kernelMetric.z :
+            (d.x*d.x+d.y*d.y)*inv;
+        float k=exp(-0.5*distance);
+        s.mean[c]+=k*a.value;
+        s.weight[c]+=k;
+        s.varianceSum[c]+=k*k*a.variance;
+        if(p.geometry.z!=0) s.stddevSum[c]+=k*sqrt(a.variance);
+        if(!fine) s.spatial[c]+=k*a.value*a.value;
+    }
+    for(uint c=0;c<3;++c) if(s.weight[c]>1e-20) {
+        s.mean[c]/=s.weight[c];
+        s.noise[c]=(p.geometry.z!=0?s.stddevSum[c]*s.stddevSum[c]:s.varianceSum[c])/(s.weight[c]*s.weight[c]);
+        s.spatial[c]=max(0.0,s.spatial[c]/s.weight[c]-s.mean[c]*s.mean[c]-s.noise[c]);
+    }
+    return s;
+}
+void main() {
+    uint i=gl_GlobalInvocationID.x+p.counts.y;
+    if(i>=p.counts.x) return;
+    if(p.counts.z==2) {
+        precise State t=state[i];
+        precise Pixel o=Pixel(vec4(0),vec4(0),vec4(0),vec4(0));
+        for(uint c=0;c<3;++c) {
+            bool valid=(uint(t.anchor.mean.w)&(1u<<c))!=0;
+            if(t.accum.weight[c]>1e-20) {
+                float w=t.accum.weight[c];
+                float blend=valid?clamp((t.accum.nearWeight[c]-0.02)/0.08,0.0,1.0):1.0;
+                blend=blend*blend*(3.0-2.0*blend);
+                float value=t.accum.value[c]/w;
+                float variance=t.accum.variance[c]/(w*w);
+                float frameSquare=t.accum.frameWeightSquared[c]/(w*w);
+                float refFraction=t.accum.referenceWeight[c]/w;
+                o.rgb[c]=blend*value+(1.0-blend)*t.anchor.mean[c];
+                float sigma=blend*sqrt(variance)+(1.0-blend)*sqrt(t.anchor.noise[c]);
+                o.variance[c]=sigma*sigma;
+                o.effectiveFrames[c]=1.0/max(1e-30,blend*blend*frameSquare+
+                    2.0*blend*(1.0-blend)*refFraction+(1.0-blend)*(1.0-blend));
+                o.confidence[c]=blend*min(1.0,t.accum.nearWeight[c])+(1.0-blend)*0.01;
+            } else if(valid) {
+                o.rgb[c]=t.anchor.mean[c];o.variance[c]=t.anchor.noise[c];
+                o.effectiveFrames[c]=1;o.confidence[c]=0.01;
+            }
+        }
+        outputPixel[i]=o;return;
+    }
+    bool referenceFrame=p.counts.z==0;
+    vec4 w=warp[i];
+    if(!referenceFrame && w.z<p.policy2.x) return;
+    precise State t;
+    precise Stats broad;
+    if(referenceFrame) {
+        broad=gather(w,vec4(0),false);
+        t.anchor=Anchor(vec4(broad.mean,0),vec4(broad.noise,0),vec4(broad.spatial,0),
+            vec4(1.0/(p.policy.x*p.policy.x),0,1.0/(p.policy.x*p.policy.x),0));
+        for(uint c=0;c<3;++c) if(broad.weight[c]>1e-20) t.anchor.mean.w+=float(1u<<c);
+        t.accum=Accumulator(vec4(0),vec4(0),vec4(0),vec4(0),vec4(0),vec4(0));
+    } else {t=state[i];broad=gather(w,vec4(0),false);}
+    float robust=1;
+    if(!referenceFrame) for(uint c=0;c<3;++c) {
+        if(broad.weight[c]<=1e-20 || (uint(t.anchor.mean.w)&(1u<<c))==0) continue;
+        float delta=broad.mean[c]-t.anchor.mean[c];
+        precise float scale=p.policy.y*p.policy.y*(t.anchor.noise[c]+broad.noise[c]+p.policy.w)+
+            p.policy.z*(t.anchor.spatial[c]+broad.spatial[c]);
+        float r=max(0.0,1.0-delta*delta/scale);
+        robust=min(robust,r*r);
+    }
+    robust*=referenceFrame?1:w.z;
+    if(robust>0) {
+        precise Stats fine=gather(w,t.anchor.kernelMetric,true);
+        for(uint c=0;c<3;++c) {
+            float kernelMetric=1.0/max(p.policy.w,t.anchor.noise[c]+(referenceFrame?t.anchor.noise[c]:broad.noise[c]));
+            float k=robust*kernelMetric;
+            float fw=fine.weight[c]*k;
+            t.accum.value[c]+=fw*fine.mean[c];t.accum.weight[c]+=fw;
+            float varNumerator=p.geometry.z!=0?fine.stddevSum[c]*fine.stddevSum[c]:fine.varianceSum[c];
+            t.accum.variance[c]+=k*k*varNumerator;
+            t.accum.frameWeightSquared[c]+=fw*fw;
+            t.accum.nearWeight[c]+=robust*fine.weight[c];
+            if(referenceFrame) t.accum.referenceWeight[c]=fw;
+        }
+    }
+    state[i]=t;
+}

@@ -79,6 +79,9 @@ SensorLinearFrameF32 normalizeRaw(const runtime::RawFrameView& frame) {
         throw std::invalid_argument(validation.message);
     }
 
+    if (frame.metadata->sampling && !imaging::legacyBayerCompatible(*frame.metadata->sampling, frame.metadata->cfa)) {
+        throw std::invalid_argument("legacy normalization requires regular Bayer; use direct reconstruction for grouped CFA");
+    }
     const auto levels = selectRawLevels(*frame.metadata);
     SensorLinearFrameF32 result{};
     result.extent = frame.storage.extent;

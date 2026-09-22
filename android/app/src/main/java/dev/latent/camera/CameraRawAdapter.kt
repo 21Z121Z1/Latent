@@ -8,16 +8,14 @@ import android.hardware.camera2.TotalCaptureResult
 import android.media.Image
 import android.util.Size
 import java.nio.ByteOrder
+import org.json.JSONObject
 
 /** Describes the default sensor coordinate system. Unknown resampling is rejected. */
 internal class CameraRawAdapter(private val id: String, private val characteristics: CameraCharacteristics) {
     private val pixelArray = checkNotNull(characteristics.get(CameraCharacteristics.SENSOR_INFO_PIXEL_ARRAY_SIZE))
     private val active = Rect(checkNotNull(characteristics.get(CameraCharacteristics.SENSOR_INFO_PRE_CORRECTION_ACTIVE_ARRAY_SIZE)))
     private val cfa = checkNotNull(characteristics.get(CameraCharacteristics.SENSOR_INFO_COLOR_FILTER_ARRANGEMENT))
-    private val white = checkNotNull(characteristics.get(CameraCharacteristics.SENSOR_INFO_WHITE_LEVEL)).toFloat()
-    private val black = checkNotNull(characteristics.get(CameraCharacteristics.SENSOR_BLACK_LEVEL_PATTERN)).let { pattern ->
-        FloatArray(4) { pattern.getOffsetForIndex(it % 2, it / 2).toFloat() }
-    }
+
 
     init {
         require(cfa in 0..3 && active.left >= 0 && active.top >= 0 && active.width() >= 2 && active.height() >= 2)
@@ -35,6 +33,28 @@ internal class CameraRawAdapter(private val id: String, private val characterist
         val timestamp = checkNotNull(result.get(CaptureResult.SENSOR_TIMESTAMP)) { "Missing sensor timestamp" }
         require(timestamp == image.timestamp) { "Image and metadata sensor timestamps differ" }
         val crop = if (rawSize == pixelArray) active else Rect(0, 0, active.width(), active.height())
+        val mode = SensorMode.observe(id, characteristics, result, 0, rawSize, crop)
+        val interpreted = JSONObject(NativeBridge.interpretSensorMode(mode))
+        require(interpreted.getInt("representation") == 1 && interpreted.getInt("pixel_mode") == 0) {
+            "This capture needs the direct tiled RAW path; refusing the legacy Bayer path"
+        }
+        return projectRawInput(id, characteristics, image, result, memberId, crop,
+            active.left and 1, active.top and 1, "default:${image.width}x${image.height}/active:${active.flattenToString()}")
+    }
+}
+
+/** Shared RAW metadata transport for legacy borrowed and direct file-backed ingress. */
+internal fun projectRawInput(id: String, characteristics: CameraCharacteristics, image: Image,
+    result: TotalCaptureResult, memberId: Long, crop: Rect, phaseX: Int, phaseY: Int, modeName: String): RawInput {
+    require(image.format == ImageFormat.RAW_SENSOR && image.planes.size == 1)
+    require(crop.left >= 0 && crop.top >= 0 && crop.right <= image.width && crop.bottom <= image.height)
+    val cfa = checkNotNull(characteristics.get(CameraCharacteristics.SENSOR_INFO_COLOR_FILTER_ARRANGEMENT))
+    val white = checkNotNull(characteristics.get(CameraCharacteristics.SENSOR_INFO_WHITE_LEVEL)).toFloat()
+    val black = checkNotNull(characteristics.get(CameraCharacteristics.SENSOR_BLACK_LEVEL_PATTERN)).let { pattern ->
+        FloatArray(4) { pattern.getOffsetForIndex(it % 2, it / 2).toFloat() }
+    }
+    val timestamp = checkNotNull(result.get(CaptureResult.SENSOR_TIMESTAMP))
+    require(timestamp == image.timestamp)
         val plane = image.planes.single()
         require(plane.pixelStride == 2 && plane.rowStride % 2 == 0) { "Unsupported RAW16 stride" }
         val bytes = plane.buffer.duplicate().order(ByteOrder.LITTLE_ENDIAN)
@@ -62,14 +82,14 @@ internal class CameraRawAdapter(private val id: String, private val characterist
             exposureNs = checkNotNull(result.get(CaptureResult.SENSOR_EXPOSURE_TIME)) { "Missing sensor exposure" },
             iso = checkNotNull(result.get(CaptureResult.SENSOR_SENSITIVITY)) { "Missing sensor ISO observation" }.toFloat(),
             width = crop.width(), height = crop.height(), rowStrideBytes = plane.rowStride, cfa = cfa,
-            phaseX = active.left and 1, phaseY = active.top and 1,
+            phaseX = phaseX, phaseY = phaseY,
             cameraId = if (physical == null) id else "$id/physical:$physical",
-            sensorMode = "default:${image.width}x${image.height}/active:${active.flattenToString()}", pixels = pixels,
+            sensorMode = modeName, pixels = pixels,
             black = black.copyOf(), dynamicBlack = result.get(CaptureResult.SENSOR_DYNAMIC_BLACK_LEVEL)?.copyOf() ?: floatArrayOf(),
             white = white, dynamicWhite = result.get(CaptureResult.SENSOR_DYNAMIC_WHITE_LEVEL)?.toFloat() ?: 0f,
+            lensShadingAlreadyApplied = characteristics.get(CameraCharacteristics.SENSOR_INFO_LENS_SHADING_APPLIED) == true,
             noise = noise, shadingColumns = columns, shadingRows = rows, shading = gains,
             whiteBalance = floatArrayOf(gain.red, gain.greenEven, gain.greenOdd, gain.blue),
             sensorToLinearSrgb = FloatArray(9) { matrix.getElement(it % 3, it / 3).toFloat() },
         )
-    }
 }

@@ -9,7 +9,7 @@ import java.nio.ByteBuffer
  * shading use Android [R, green-even, green-odd, B]. Native code maps crop phase.
  */
 @Keep
-class RawInput(
+data class RawInput(
     @JvmField val id: Long,
     @JvmField val timestampNs: Long,
     @JvmField val exposureNs: Long,
@@ -34,6 +34,7 @@ class RawInput(
     @JvmField val whiteBalance: FloatArray,
     @JvmField val sensorToLinearSrgb: FloatArray,
     @JvmField val synthetic: Boolean = false,
+    @JvmField val lensShadingAlreadyApplied: Boolean = false,
 )
 
 @Keep
@@ -91,6 +92,16 @@ object NativeBridge {
         memoryBudgetBytes: Long,
         renderExposureEv: Float,
         progress: NativeProgress,
+    ): String
+
+    /** Returns the canonical native sensor interpretation or throws. */
+    external fun interpretSensorMode(mode: SensorModeInput): String
+
+    /** File-backed, tile-streamed developer reconstruction. Writes camera-linear RGB
+     * and conditional uncertainty planes, not a rendered JPEG or an AP1 SceneFrame. */
+    external fun reconstructRawFiles(
+        frames: Array<RawInput>, modes: Array<SensorModeInput>, paths: Array<String>,
+        outputPath: String, preferVulkan: Boolean, memoryBudgetBytes: Long, thermalSeverity: Int,
     ): String
 
     external fun processingBound(width: Int, height: Int, maximumFrames: Int, preferVulkan: Boolean): Long

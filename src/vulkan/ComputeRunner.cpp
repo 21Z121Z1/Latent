@@ -3,6 +3,8 @@
 #include "latent/vulkan/VulkanRuntime.h"
 
 #include <algorithm>
+#include <array>
+#include <limits>
 #include <cstring>
 #include <mutex>
 #include <stdexcept>
@@ -20,6 +22,8 @@ std::uint32_t findHostVisibleMemoryType(
     VkPhysicalDeviceMemoryProperties properties{};
     vkGetPhysicalDeviceMemoryProperties(physicalDevice, &properties);
 
+    std::uint32_t selected = UINT32_MAX;
+    int best = -1;
     for (std::uint32_t type = 0; type < properties.memoryTypeCount; ++type) {
         const bool hostVisible =
             (properties.memoryTypes[type].propertyFlags &
@@ -28,10 +32,14 @@ std::uint32_t findHostVisibleMemoryType(
             (properties.memoryTypes[type].propertyFlags &
              VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) != 0U;
         if (hostVisible && hostCoherent && (typeBits & (1U << type)) != 0U) {
-            return type;
+            const auto flags = properties.memoryTypes[type].propertyFlags;
+            const int score = ((flags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) ? 2 : 0) +
+                              ((flags & VK_MEMORY_PROPERTY_HOST_CACHED_BIT) ? 1 : 0);
+            if (score > best) { best = score; selected = type; }
         }
     }
-    throw std::runtime_error("no host-visible device memory type available");
+    if (selected != UINT32_MAX) return selected;
+    throw std::runtime_error("no coherent host-visible memory type available");
 }
 
 void validateTransfer(
@@ -90,7 +98,7 @@ std::unique_ptr<ComputeRunner> ComputeRunner::tryCreate(std::string* detail) {
     const VkDescriptorPoolCreateInfo descriptorPoolInfo{
         VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
         nullptr,
-        0U,
+        VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT,
         256U,
         1U,
         &poolSize,
@@ -103,6 +111,11 @@ std::unique_ptr<ComputeRunner> ComputeRunner::tryCreate(std::string* detail) {
         return nullptr;
     }
 
+    const VkFenceCreateInfo fenceInfo{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO, nullptr, 0};
+    if (vkCreateFence(runner->device_, &fenceInfo, nullptr, &runner->fence_) != VK_SUCCESS) {
+        if (detail) *detail = "VkFence creation failed";
+        return nullptr;
+    }
     return runner;
 }
 
@@ -118,6 +131,8 @@ ComputeRunner::~ComputeRunner() {
         vkDestroyDescriptorSetLayout(device_, entry.setLayout, nullptr);
     }
     pipelines_.clear();
+    if (timestampPool_ != VK_NULL_HANDLE) vkDestroyQueryPool(device_, timestampPool_, nullptr);
+    if (fence_ != VK_NULL_HANDLE) vkDestroyFence(device_, fence_, nullptr);
     if (descriptorPool_ != VK_NULL_HANDLE) {
         vkDestroyDescriptorPool(device_, descriptorPool_, nullptr);
     }
@@ -133,6 +148,10 @@ ComputeRunner::Buffer ComputeRunner::createStorageBuffer(VkDeviceSize size) {
 
     Buffer buffer{};
     buffer.size = size;
+    VkPhysicalDeviceProperties limits{};
+    vkGetPhysicalDeviceProperties(physicalDevice_, &limits);
+    if (size > limits.limits.maxStorageBufferRange)
+        throw std::invalid_argument("storage buffer exceeds maxStorageBufferRange");
 
     const VkBufferCreateInfo bufferInfo{
         VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
@@ -180,10 +199,16 @@ ComputeRunner::Buffer ComputeRunner::createStorageBuffer(VkDeviceSize size) {
         throw std::runtime_error("vkBindBufferMemory failed");
     }
 
+    buffer.allocationSize = requirements.size;
+    if (vkMapMemory(device_, buffer.memory, 0, size, 0, &buffer.mapped) != VK_SUCCESS) {
+        destroyBuffer(buffer);
+        throw std::runtime_error("persistent vkMapMemory failed");
+    }
     return buffer;
 }
 
 void ComputeRunner::destroyBuffer(Buffer& buffer) {
+    if (buffer.mapped) { vkUnmapMemory(device_, buffer.memory); buffer.mapped = nullptr; }
     if (buffer.handle != VK_NULL_HANDLE) {
         vkDestroyBuffer(device_, buffer.handle, nullptr);
         buffer.handle = VK_NULL_HANDLE;
@@ -193,6 +218,7 @@ void ComputeRunner::destroyBuffer(Buffer& buffer) {
         buffer.memory = VK_NULL_HANDLE;
     }
     buffer.size = 0U;
+    buffer.allocationSize = 0U;
 }
 
 void ComputeRunner::upload(
@@ -204,14 +230,8 @@ void ComputeRunner::upload(
         return;
     }
 
-    void* mapped = nullptr;
-    if (vkMapMemory(device_, buffer.memory, 0U,
-                    static_cast<VkDeviceSize>(byteCount), 0U, &mapped) !=
-        VK_SUCCESS) {
-        throw std::runtime_error("vkMapMemory failed");
-    }
-    std::memcpy(mapped, data, byteCount);
-    vkUnmapMemory(device_, buffer.memory);
+    if (!buffer.mapped) throw std::invalid_argument("upload to unmapped/destroyed buffer");
+    std::memcpy(buffer.mapped, data, byteCount);
 }
 
 void ComputeRunner::download(const Buffer& buffer, void* out, std::size_t byteCount) {
@@ -220,20 +240,22 @@ void ComputeRunner::download(const Buffer& buffer, void* out, std::size_t byteCo
         return;
     }
 
-    void* mapped = nullptr;
-    if (vkMapMemory(device_, buffer.memory, 0U,
-                    static_cast<VkDeviceSize>(byteCount), 0U, &mapped) !=
-        VK_SUCCESS) {
-        throw std::runtime_error("vkMapMemory failed");
-    }
-    std::memcpy(out, mapped, byteCount);
-    vkUnmapMemory(device_, buffer.memory);
+    if (!buffer.mapped) throw std::invalid_argument("download from unmapped/destroyed buffer");
+    std::memcpy(out, buffer.mapped, byteCount);
 }
 
 VkPipeline ComputeRunner::createComputePipeline(
     const std::vector<std::uint32_t>& spirv,
     std::uint32_t bindingCount,
     std::uint32_t pushConstantSize) {
+    const std::lock_guard lock(queueMutex);
+    VkPhysicalDeviceProperties props{};
+    vkGetPhysicalDeviceProperties(physicalDevice_, &props);
+    if (spirv.empty() || !bindingCount || bindingCount > 16 ||
+        bindingCount > props.limits.maxPerStageDescriptorStorageBuffers ||
+        bindingCount > props.limits.maxDescriptorSetStorageBuffers ||
+        pushConstantSize > props.limits.maxPushConstantsSize || pushConstantSize % 4U)
+        throw std::invalid_argument("compute pipeline exceeds device limits");
     VkShaderModuleCreateInfo moduleInfo{
         VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
         nullptr,
@@ -248,7 +270,7 @@ VkPipeline ComputeRunner::createComputePipeline(
         throw std::runtime_error("VkShaderModule creation failed");
     }
 
-    std::vector<VkDescriptorSetLayoutBinding> layoutBindings(bindingCount);
+    std::array<VkDescriptorSetLayoutBinding,16> layoutBindings{};
     for (std::uint32_t i = 0; i < bindingCount; ++i) {
         layoutBindings[i] = {};
         layoutBindings[i].binding = i;
@@ -323,12 +345,32 @@ VkPipeline ComputeRunner::createComputePipeline(
     vkDestroyShaderModule(device_, shaderModule, nullptr);
 
     if (result != VK_SUCCESS || pipeline == VK_NULL_HANDLE) {
+        if (pipeline != VK_NULL_HANDLE) vkDestroyPipeline(device_, pipeline, nullptr);
         vkDestroyPipelineLayout(device_, pipelineLayout, nullptr);
         vkDestroyDescriptorSetLayout(device_, setLayout, nullptr);
         throw std::runtime_error("compute pipeline creation failed");
     }
 
-    pipelines_.push_back(PipelineEntry{pipeline, pipelineLayout, setLayout});
+    PipelineEntry entry{pipeline, pipelineLayout, setLayout, VK_NULL_HANDLE, VK_NULL_HANDLE,
+                        bindingCount, pushConstantSize};
+    const VkDescriptorSetAllocateInfo setInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+        nullptr, descriptorPool_, 1, &setLayout};
+    const VkCommandBufferAllocateInfo commandInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+        nullptr, commandPool_, VK_COMMAND_BUFFER_LEVEL_PRIMARY, 1};
+    try {
+        if (vkAllocateDescriptorSets(device_, &setInfo, &entry.descriptorSet) != VK_SUCCESS)
+            throw std::runtime_error("persistent descriptor set allocation failed");
+        if (vkAllocateCommandBuffers(device_, &commandInfo, &entry.command) != VK_SUCCESS)
+            throw std::runtime_error("persistent command allocation failed");
+        pipelines_.push_back(entry);
+    } catch (...) {
+        if (entry.command) vkFreeCommandBuffers(device_, commandPool_, 1, &entry.command);
+        if (entry.descriptorSet) (void)vkFreeDescriptorSets(device_, descriptorPool_, 1, &entry.descriptorSet);
+        vkDestroyPipeline(device_, pipeline, nullptr);
+        vkDestroyPipelineLayout(device_, pipelineLayout, nullptr);
+        vkDestroyDescriptorSetLayout(device_, setLayout, nullptr);
+        throw;
+    }
     return pipeline;
 }
 
@@ -343,8 +385,11 @@ const ComputeRunner::PipelineEntry& ComputeRunner::findPipeline(
 }
 
 void ComputeRunner::destroyPipeline(VkPipeline pipeline) {
+    const std::lock_guard lock(queueMutex);
     for (auto it = pipelines_.begin(); it != pipelines_.end(); ++it) {
         if (it->pipeline == pipeline) {
+            vkFreeCommandBuffers(device_, commandPool_, 1, &it->command);
+            (void)vkFreeDescriptorSets(device_, descriptorPool_, 1, &it->descriptorSet);
             vkDestroyPipeline(device_, it->pipeline, nullptr);
             vkDestroyPipelineLayout(device_, it->pipelineLayout, nullptr);
             vkDestroyDescriptorSetLayout(device_, it->setLayout, nullptr);
@@ -352,6 +397,25 @@ void ComputeRunner::destroyPipeline(VkPipeline pipeline) {
             return;
         }
     }
+}
+
+bool ComputeRunner::enableTimestamps() {
+    const std::lock_guard lock(queueMutex);
+    if (timestampsEnabled_) return true;
+    std::uint32_t count = 0;
+    vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice_, &count, nullptr);
+    std::vector<VkQueueFamilyProperties> families(count);
+    vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice_, &count, families.data());
+    if (queueFamily_ >= count || families[queueFamily_].timestampValidBits == 0) return false;
+    timestampBits_ = families[queueFamily_].timestampValidBits;
+    VkPhysicalDeviceProperties props{};
+    vkGetPhysicalDeviceProperties(physicalDevice_, &props);
+    timestampPeriod_ = props.limits.timestampPeriod;
+    const VkQueryPoolCreateInfo queryInfo{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO, nullptr,
+        0, VK_QUERY_TYPE_TIMESTAMP, 2, 0};
+    if (vkCreateQueryPool(device_, &queryInfo, nullptr, &timestampPool_) != VK_SUCCESS) return false;
+    timestampsEnabled_ = true;
+    return true;
 }
 
 void ComputeRunner::dispatch(
@@ -362,130 +426,69 @@ void ComputeRunner::dispatch(
     std::uint32_t groupCountX) {
     const std::lock_guard lock(queueMutex);
     const auto& entry = findPipeline(pipeline);
-
-    const VkDescriptorSetAllocateInfo allocateInfo{
-        VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
-        nullptr,
-        descriptorPool_,
-        1U,
-        &entry.setLayout,
-    };
-
-    VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
-    if (vkAllocateDescriptorSets(device_, &allocateInfo, &descriptorSet) !=
-        VK_SUCCESS) {
-        throw std::runtime_error("descriptor set allocation failed");
+    VkPhysicalDeviceProperties props{};
+    vkGetPhysicalDeviceProperties(physicalDevice_, &props);
+    if (bindings.size() != entry.bindingCount || pushConstantSize != entry.pushConstantSize ||
+        (pushConstantSize && !pushConstants) || groupCountX > props.limits.maxComputeWorkGroupCount[0])
+        throw std::invalid_argument("compute dispatch layout or limit mismatch");
+    // No per-dispatch descriptor/command allocation or heap vectors. All work
+    // completes before reuse. Multiple runners externally synchronize the shared queue.
+    const auto descriptorSet = entry.descriptorSet;
+    const auto command = entry.command;
+    std::array<VkWriteDescriptorSet,16> writes{};
+    for (std::size_t i = 0; i < bindings.size(); ++i) {
+        writes[i] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, descriptorSet,
+            static_cast<std::uint32_t>(i), 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+            nullptr, &bindings[i], nullptr};
     }
-
-    VkCommandBuffer command = VK_NULL_HANDLE;
-    const auto releaseCommand = [&]() noexcept {
-        if (command != VK_NULL_HANDLE) {
-            vkFreeCommandBuffers(device_, commandPool_, 1U, &command);
-            command = VK_NULL_HANDLE;
-        }
-    };
-    const auto resetDescriptors = [&]() {
-        if (vkResetDescriptorPool(device_, descriptorPool_, 0U) != VK_SUCCESS) {
-            throw std::runtime_error("vkResetDescriptorPool failed");
-        }
-        descriptorSet = VK_NULL_HANDLE;
-    };
-
-    try {
-        std::vector<VkWriteDescriptorSet> writes(bindings.size());
-        for (std::size_t i = 0; i < bindings.size(); ++i) {
-            writes[i] = {};
-            writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-            writes[i].dstSet = descriptorSet;
-            writes[i].dstBinding = static_cast<std::uint32_t>(i);
-            writes[i].descriptorCount = 1U;
-            writes[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-            writes[i].pBufferInfo = &bindings[i];
-        }
-        vkUpdateDescriptorSets(
-            device_, static_cast<std::uint32_t>(writes.size()), writes.data(),
-            0U, nullptr);
-
-        const VkCommandBufferAllocateInfo commandInfo{
-            VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
-            nullptr,
-            commandPool_,
-            VK_COMMAND_BUFFER_LEVEL_PRIMARY,
-            1U,
-        };
-        if (vkAllocateCommandBuffers(device_, &commandInfo, &command) !=
-            VK_SUCCESS) {
-            throw std::runtime_error("command buffer allocation failed");
-        }
-
-        const VkCommandBufferBeginInfo beginInfo{
-            VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
-            nullptr,
-            VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
-            nullptr,
-        };
-        if (vkBeginCommandBuffer(command, &beginInfo) != VK_SUCCESS) {
-            throw std::runtime_error("vkBeginCommandBuffer failed");
-        }
-
-        const VkMemoryBarrier before{VK_STRUCTURE_TYPE_MEMORY_BARRIER, nullptr,
-            VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT};
-        vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, &before, 0, nullptr, 0, nullptr);
-        vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
-        vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_COMPUTE,
-                                entry.pipelineLayout, 0U, 1U,
-                                &descriptorSet, 0U, nullptr);
-        if (pushConstantSize > 0U && pushConstants != nullptr) {
-            vkCmdPushConstants(command, entry.pipelineLayout,
-                               VK_SHADER_STAGE_COMPUTE_BIT, 0U,
-                               pushConstantSize, pushConstants);
-        }
-        vkCmdDispatch(command, groupCountX, 1U, 1U);
-        const VkMemoryBarrier after{VK_STRUCTURE_TYPE_MEMORY_BARRIER, nullptr,
-            VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_HOST_READ_BIT};
-        vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-            VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &after, 0, nullptr, 0, nullptr);
-        if (vkEndCommandBuffer(command) != VK_SUCCESS) {
-            throw std::runtime_error("vkEndCommandBuffer failed");
-        }
-
-        const VkSubmitInfo submitInfo{
-            VK_STRUCTURE_TYPE_SUBMIT_INFO,
-            nullptr,
-            0U,
-            nullptr,
-            nullptr,
-            1U,
-            &command,
-            0U,
-            nullptr,
-        };
-        if (vkQueueSubmit(queue_, 1U, &submitInfo, VK_NULL_HANDLE) !=
-            VK_SUCCESS) {
-            throw std::runtime_error("vkQueueSubmit failed");
-        }
-        if (vkQueueWaitIdle(queue_) != VK_SUCCESS) {
-            throw std::runtime_error("vkQueueWaitIdle failed");
-        }
-
-        // This runner is deliberately synchronous and owns the descriptor
-        // pool exclusively. Once the queue is idle and the command buffer is
-        // freed, resetting the whole pool is stronger than freeing one set:
-        // all descriptor storage is recycled without accumulating
-        // fragmentation across different kernel layouts.
-        releaseCommand();
-        resetDescriptors();
-    } catch (...) {
-        // If submission happened, wait for all possible descriptor use to
-        // finish before invalidating the pool. Device loss can make the wait
-        // fail again; release host-side command resources regardless.
+    vkUpdateDescriptorSets(device_, static_cast<std::uint32_t>(bindings.size()), writes.data(), 0, nullptr);
+    if (vkResetCommandBuffer(command, 0) != VK_SUCCESS)
+        throw std::runtime_error("vkResetCommandBuffer failed");
+    const VkCommandBufferBeginInfo beginInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+        nullptr, VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT, nullptr};
+    if (vkBeginCommandBuffer(command, &beginInfo) != VK_SUCCESS)
+        throw std::runtime_error("vkBeginCommandBuffer failed");
+    if (timestampsEnabled_) {
+        vkCmdResetQueryPool(command, timestampPool_, 0, 2);
+        vkCmdWriteTimestamp(command, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, timestampPool_, 0);
+    }
+    const VkMemoryBarrier before{VK_STRUCTURE_TYPE_MEMORY_BARRIER, nullptr,
+        VK_ACCESS_HOST_WRITE_BIT | VK_ACCESS_SHADER_WRITE_BIT,
+        VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT};
+    vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_HOST_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, &before, 0, nullptr, 0, nullptr);
+    vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
+    vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_COMPUTE, entry.pipelineLayout,
+        0, 1, &descriptorSet, 0, nullptr);
+    if (pushConstantSize) vkCmdPushConstants(command, entry.pipelineLayout,
+        VK_SHADER_STAGE_COMPUTE_BIT, 0, pushConstantSize, pushConstants);
+    vkCmdDispatch(command, groupCountX, 1, 1);
+    const VkMemoryBarrier after{VK_STRUCTURE_TYPE_MEMORY_BARRIER, nullptr,
+        VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_HOST_READ_BIT};
+    vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_HOST_BIT,
+        0, 1, &after, 0, nullptr, 0, nullptr);
+    if (timestampsEnabled_)
+        vkCmdWriteTimestamp(command, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, timestampPool_, 1);
+    if (vkEndCommandBuffer(command) != VK_SUCCESS)
+        throw std::runtime_error("vkEndCommandBuffer failed");
+    if (vkResetFences(device_, 1, &fence_) != VK_SUCCESS)
+        throw std::runtime_error("vkResetFences failed");
+    const VkSubmitInfo submitInfo{VK_STRUCTURE_TYPE_SUBMIT_INFO, nullptr,
+        0, nullptr, nullptr, 1, &command, 0, nullptr};
+    if (vkQueueSubmit(queue_, 1, &submitInfo, fence_) != VK_SUCCESS)
+        throw std::runtime_error("vkQueueSubmit failed");
+    const auto wait = vkWaitForFences(device_, 1, &fence_, VK_TRUE, std::numeric_limits<std::uint64_t>::max());
+    if (wait != VK_SUCCESS) {
         (void)vkQueueWaitIdle(queue_);
-        releaseCommand();
-        (void)vkResetDescriptorPool(device_, descriptorPool_, 0U);
-        descriptorSet = VK_NULL_HANDLE;
-        throw;
+        throw std::runtime_error("compute fence wait failed");
+    }
+    if (timestampsEnabled_) {
+        std::array<std::uint64_t,2> ticks{};
+        if (vkGetQueryPoolResults(device_, timestampPool_, 0, 2, sizeof(ticks), ticks.data(),
+            sizeof(std::uint64_t), VK_QUERY_RESULT_64_BIT) != VK_SUCCESS)
+            throw std::runtime_error("timestamp results unavailable after fence");
+        const auto mask = timestampBits_ == 64 ? UINT64_MAX : (UINT64_C(1) << timestampBits_) - 1;
+        gpuMilliseconds_ += static_cast<double>((ticks[1]-ticks[0]) & mask) * timestampPeriod_ * 1e-6;
     }
 }
-
 }  // namespace latent::vulkan
