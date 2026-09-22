@@ -55,10 +55,23 @@ struct NormalizedRaw {
     bool noiseEstimated = false;
 };
 
+// Conditions on estimated sample geometry, independent of photometric merge
+// compatibility. Multiple conditions can coexist; priors are explicit.
+namespace GeometryIssue {
+inline constexpr std::uint32_t Reference = 1U, Underconstrained = 2U, Ambiguous = 4U,
+    Inconsistent = 8U, InsufficientOverlap = 16U, GlobalPrior = 32U, IdentityPrior = 64U;
+}
+struct GeometryEvidence {
+    float textureSupport = 0;       // Noise-debiased 2D structure score, NOT probability.
+    float cycleErrorPixels = 0;     // Forward/backward consistency in sensor pixels.
+    float distinctCostGap = 0;      // Global tested-basin margin (also on tiles), NOT proof of uniqueness.
+    std::uint32_t issues = 0;
+};
+
 // sourcePosition = referencePosition + displacement, in sensor pixels.
 struct MotionTile {
     float dx = 0.0F, dy = 0.0F;
-    float confidence = 0.0F;
+    float confidence = 0.0F; // Photometric/consistency compatibility, NOT geometry certainty.
     float residual = 0.0F;
 };
 static_assert(sizeof(MotionTile) == 16U);
@@ -68,6 +81,8 @@ struct AlignmentField {
     std::uint32_t tileSize = 0U, columns = 0U, rows = 0U;
     MotionTile global{};
     std::vector<MotionTile> tiles;
+    GeometryEvidence globalEvidence{};
+    std::vector<GeometryEvidence> tileEvidence;
 };
 
 struct TemporalUncertainty {

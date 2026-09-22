@@ -18,10 +18,11 @@ std::uint64_t temporalWorkingSetBound(imaging::Extent extent, std::size_t member
     const auto tiles = ((static_cast<std::uint64_t>(extent.width) + policy.tileSize - 1U) / policy.tileSize) *
         ((static_cast<std::uint64_t>(extent.height) + policy.tileSize - 1U) / policy.tileSize);
     const std::uint64_t bytesPerPixel = backend == TemporalBackend::Vulkan ? 160U : 112U;
+    // Regional lineage, motion, geometry evidence and streaming scratch reserve.
     const auto maximum = std::numeric_limits<std::uint64_t>::max();
-    if (n > maximum / bytesPerPixel || tiles > maximum / 128U / members)
+    if (n > maximum / bytesPerPixel || tiles > maximum / 160U / members)
         throw std::invalid_argument("temporal working-set arithmetic overflow");
-    const auto imageBytes = n * bytesPerPixel, traceBytes = tiles * 128U * members;
+    const auto imageBytes = n * bytesPerPixel, traceBytes = tiles * 160U * members;
     if (traceBytes > maximum - imageBytes) throw std::invalid_argument("temporal working-set arithmetic overflow");
     return imageBytes + traceBytes;
 }

@@ -61,7 +61,8 @@ The current code includes:
 - `RawFrame`, `SceneFrame`, and `RenderedFrame` contracts with provenance/confidence-aware metadata;
 - deterministic FP32 reconstruction with negative and >1 scene values preserved;
 - typed `RawBurst`, multi-source lineage, a temporal execution plan, and bounded streaming fusion;
-- global/local translation, same-CFA fractional sampling, noise-aware robust fusion, and conditional uncertainty;
+- continuous subpixel global/local translation with texture/ambiguity/cycle diagnostics and explicit geometry priors;
+- same-CFA fractional sampling, noise-aware robust fusion, and conditional uncertainty;
 - a Vulkan 1.1 FP32 fusion lowering with CPU differential and resource-lifetime tests;
 - Camera2 preview/RAW capture, constant-exposure capture policy, timestamp-matched JNI borrowing, Material 3 UI, fixture replay, and transactional JPEG/MediaStore output;
 - DNG Chapter 6 dual-illuminant color science, Bradford adaptation, Robertson CCT, and camera -> XYZ D50 -> ACEScg/AP1 D60 transforms;

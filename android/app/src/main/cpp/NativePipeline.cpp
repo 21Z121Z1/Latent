@@ -111,6 +111,20 @@ std::string escape(const std::string& text) {
     return output;
 }
 
+void writeGeometry(std::ostream& json, const reference::AlignmentField& field) {
+    const auto& g=field.globalEvidence;
+    json << "{\"schemaVersion\":1,\"dx\":" << field.global.dx << ",\"dy\":" << field.global.dy
+         << ",\"textureSupport\":" << g.textureSupport << ",\"cycleErrorPx\":" << g.cycleErrorPixels
+         << ",\"globalBasinGap\":" << g.distinctCostGap << ",\"issues\":" << g.issues << ",\"tiles\":[";
+    for (std::size_t n=0; n<field.tiles.size(); ++n) {
+        if (n) json << ',';
+        const auto& t=field.tiles[n]; const auto& e=field.tileEvidence.at(n);
+        json << '[' << t.dx << ',' << t.dy << ',' << e.textureSupport << ',' << e.cycleErrorPixels
+             << ',' << e.distinctCostGap << ',' << e.issues << ']';
+    }
+    json << "]}";
+}
+
 class BitmapPixels {
 public:
     BitmapPixels(JNIEnv* e, jobject bitmap, const imaging::Extent extent) : env_(e), bitmap_(bitmap) {
@@ -303,7 +317,9 @@ jstring process(JNIEnv* e, jobjectArray inputs, jobject bitmap, jboolean vk, jlo
         const auto& frame = result.trace.frames[n]; const auto& contribution = result.scene.lineage->contributions[n];
         json << "{\"id\":" << frame.frame.value << ",\"gainEstimated\":" << (frame.gainEstimated ? "true" : "false")
              << ",\"noiseEstimated\":" << (frame.noiseEstimated ? "true" : "false") << ",\"radiometricConfidence\":" << frame.radiometricConfidence
-             << ",\"accepted\":" << contribution.acceptedSamples << ",\"regions\":[";
+             << ",\"geometry\":";
+        writeGeometry(json,frame.alignment);
+        json << ",\"accepted\":" << contribution.acceptedSamples << ",\"regions\":[";
         for (std::size_t r = 0; r < contribution.regions.size(); ++r) {
             if (r) json << ',';
             const auto& region = contribution.regions[r];

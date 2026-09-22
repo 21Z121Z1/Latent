@@ -24,6 +24,19 @@ class NativeReplayTest {
         assertEquals(4, trace.getInt("frameCount"))
         assertTrue(trace.getDouble("effectiveN") > 1.0)
         assertEquals(4, trace.getJSONArray("frames").length())
+        for (index in 0 until 4) {
+            val frame = trace.getJSONArray("frames").getJSONObject(index)
+            val geometry = frame.getJSONObject("geometry")
+            assertEquals(1, geometry.getInt("schemaVersion"))
+            assertTrue(geometry.getDouble("textureSupport") in 0.0..1.0)
+            assertTrue(geometry.getDouble("cycleErrorPx").isFinite())
+            assertEquals(2, geometry.getJSONArray("tiles").length())
+            if (frame.getLong("id") == trace.getLong("referenceId")) {
+                assertEquals(1, geometry.getInt("issues"))
+                assertEquals(0.0, geometry.getDouble("dx"), 0.0)
+                assertEquals(0.0, geometry.getDouble("dy"), 0.0)
+            }
+        }
         val replay = image()
         process(false, replay)
         assertTrue(reference.sameAs(replay))
