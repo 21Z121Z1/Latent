@@ -1,0 +1,43 @@
+name: joint-raw-delivery
+on:
+  push:
+    branches: [automation/jsr-joint-delivery-219158f]
+permissions:
+  contents: write
+jobs:
+  import:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+      - name: Verify independently tested implementation payload
+        run: |
+          python3 - <<'PY'
+          import base64, hashlib, lzma, os, pathlib
+          parts = pathlib.Path('.automation/joint-219158f')
+          encoded = ''.join((parts / f'{i}.b64').read_text() for i in range(4))
+          decoder = lzma.LZMADecompressor(memlimit=256*1024*1024)
+          patch = decoder.decompress(base64.b64decode(encoded, validate=True), max_length=125908)
+          assert decoder.eof and not decoder.unused_data
+          assert len(patch) == 125907
+          assert hashlib.sha256(patch).hexdigest() == 'd266e1d3b11cf54a58f23b2be90a2431f6eebb9f1540c8078a180de4a52f7e1d'
+          raw_commit = base64.b64decode('dHJlZSAyZGVmNDA4ZjBkNmQ0M2M3NzM1OGFjNzFhMmE0NDNhNDI2OGE5ZTZjCnBhcmVudCA3YWYyZjI0M2QzOTVkODAyODMxZGUyNWZjNzIyNDU3NDZmZTYwMWExCmF1dGhvciBMYXRlbnQgcmVjb25zdHJ1Y3Rpb24gZW5naW5lZXJpbmcgPDQxODk4MjgyK2dpdGh1Yi1hY3Rpb25zW2JvdF1AdXNlcnMubm9yZXBseS5naXRodWIuY29tPiAxNzkwMTE2NTA2ICswMDAwCmNvbW1pdHRlciBMYXRlbnQgcmVjb25zdHJ1Y3Rpb24gZW5naW5lZXJpbmcgPDQxODk4MjgyK2dpdGh1Yi1hY3Rpb25zW2JvdF1AdXNlcnMubm9yZXBseS5naXRodWIuY29tPiAxNzkwMTE2NTA2ICswMDAwCgpmZWF0OiBwaGFzZS1hZG1pdHRlZCBqb2ludCBSQVcgcmVjb25zdHJ1Y3Rpb24gd2l0aCBzY2FsZS1lcXVpdmFyaWFudCBDUFUgYW5kIFZ1bGthbiBrZXJuZWxzCgpJbmRlcGVuZGVudGx5IGltcGxlbWVudCBxdWFkcmF0aWMgb3JpZ2luYWwtc2FtcGxlIHJlY29uc3RydWN0aW9uIG92ZXIgdGhlIGNhbm9uaWNhbCBncm91cGVkLUNGQSBleGVjdXRvci4gUHJlc2VydmUgc2lnbmVkIGNvbmRpdGlvbmFsIGNvdmFyaWFuY2UsIFFSLXJvb3QgZnJhbWUgc3VwcG9ydCwgaGFsbyBhbmQgaW50ZW5zaXR5IGludmFyaWFudHM7IHJldGFpbiB0aGUgR2F1c3NpYW4gemVyb3RoLW1vbWVudCBmYWxsYmFjay4gQWRkIHNhbWUtZ3JpZCBhcGVydHVyZS1pbnRlZ3JhdGVkIFNSLCBnYWluLCBwaGFzZSwgbm9pc2UsIHNlYW0sIGFuZCBiYWNrZW5kIGV2aWRlbmNlLCBhY3R1YWwtc2l6ZSBhZG1pc3Npb24sIGFuZCBBbmRyb2lkIHdpcmUgY29tcGF0aWJpbGl0eS4gSlNSIHB1YmxpYyBiZWhhdmlvciBpbmZvcm1zIHRlc3RzIG9ubHk7IG5vIEpTUiBjb2RlLCBtb2RlbCwgb3IgYmluYXJ5IGlzIHVzZWQuCg==', validate=True)
+          root = pathlib.Path(os.environ['RUNNER_TEMP'])
+          (root/'joint.patch').write_bytes(patch)
+          (root/'joint.commit').write_bytes(raw_commit)
+          print('Payload verified:', len(patch), 'bytes')
+          PY
+      - name: Import exact commit on isolated non-rewriting branch
+        run: |
+          set -euo pipefail
+          git checkout --detach 7af2f243d395d802831de25fc72245746fe601a1
+          git apply --index "$RUNNER_TEMP/joint.patch"
+          test "$(git write-tree)" = 2def408f0d6d43c77358ac71a2a443a4268a9e6c
+          head=$(git hash-object -t commit -w --stdin < "$RUNNER_TEMP/joint.commit")
+          test "$head" = 219158feb61cbd5f46078719e7ebd4b4377be39f
+          git cat-file -p "$head"
+          git diff --stat "$head^" "$head"
+          git push origin "$head:refs/heads/automation/jsr-joint-imported-219158f"
