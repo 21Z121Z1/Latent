@@ -1,115 +1,227 @@
 #version 450
-// FP32 camera-RGB evidence. CFA interpretation is canonical CPU normalization;
-// the shader receives validated channel IDs, never a second layout enum.
+// Independent lowering of the FP32 direct-CFA reference operation. Canonical
+// normalization supplies channel IDs. No backend-specific CFA/color prior.
 layout(local_size_x=64) in;
 struct Evidence {float value;float variance;uint channel;uint valid;};
-struct Anchor {vec4 mean;vec4 noise;vec4 spatial;vec4 kernelMetric;};
-struct Accumulator {vec4 value;vec4 weight;vec4 variance;vec4 frameWeightSquared;vec4 nearWeight;vec4 referenceWeight;};
+struct WarpSample {vec4 position;vec4 sourceToReference;};
+struct Anchor {vec4 mean;vec4 noise;vec4 spatial;vec4 kernelMetric;vec4 referenceWarp;};
+struct Accumulator {
+    vec4 signal[6];
+    vec4 gram[21];vec4 noiseGram[21];vec4 noiseBoundGram[21];vec4 frameRoot[21];
+    vec4 referenceMoments[6];vec4 phaseCos[4];vec4 phaseSin[4];vec4 nearWeight;
+};
 struct State {Anchor anchor;Accumulator accum;};
-struct Pixel {vec4 rgb;vec4 variance;vec4 effectiveFrames;vec4 confidence;};
+struct Pixel {vec4 rgb;vec4 variance;vec4 effectiveFrames;vec4 confidence;vec4 samplingDiversity;vec4 modelBlend;};
 layout(std430,binding=0) readonly buffer Raw {Evidence raw[];};
-layout(std430,binding=1) readonly buffer Warp {vec4 warp[];};
+layout(std430,binding=1) readonly buffer Warp {WarpSample warp[];};
 layout(std430,binding=2) buffer States {State state[];};
 layout(std430,binding=3) writeonly buffer Output {Pixel outputPixel[];};
 layout(push_constant) uniform Push {
     uvec4 counts; // count, basePixel, phase (0 begin+reference, 1 add, 2 finish), reserved
     uvec4 tile; // x,y,w,h
     uvec4 geometry; // radius x,y,correlated noise,reserved
-    vec4 policy; // detail sigma, residual cutoff, alias allowance, variance floor
-    vec4 policy2; // minimum confidence, fallback sigma, reserved,reserved
+    vec4 policy; // detail sigma, residual cutoff, alias allowance, relative variance floor
+    vec4 policy2; // minimum confidence, fallback sigma, quadratic strength, fit regularization
+    vec4 policy3; // maximum fit leverage, reserved x3
 } p;
-struct Stats {vec3 mean;vec3 noise;vec3 spatial;vec3 weight;vec3 varianceSum;vec3 stddevSum;};
-Stats gather(vec4 w,vec4 kernelMetric,bool fine) {
-    precise Stats s=Stats(vec3(0),vec3(0),vec3(0),vec3(0),vec3(0),vec3(0));
+uint at(uint i,uint j) {return i*(i+1)/2+j;}
+ivec4 bounds(vec4 w) {
     ivec2 center=ivec2(floor(w.xy));
-    ivec2 lo=max(ivec2(p.tile.xy),center-ivec2(p.geometry.xy));
-    ivec2 hi=min(ivec2(p.tile.xy+p.tile.zw)-1,center+ivec2(p.geometry.xy)+1);
-    float inv=1.0/(p.policy2.y*p.policy2.y);
-    for(int y=lo.y;y<=hi.y;++y) for(int x=lo.x;x<=hi.x;++x) {
-        uint index=uint(y-int(p.tile.y))*p.tile.z+uint(x-int(p.tile.x));
-        Evidence a=raw[index];
-        if(a.valid==0) continue;
+    return ivec4(max(ivec2(p.tile.xy),center-ivec2(p.geometry.xy)),
+        min(ivec2(p.tile.xy+p.tile.zw)-1,center+ivec2(p.geometry.xy)+1));
+}
+Evidence sampleAt(int x,int y) {return raw[uint(y-int(p.tile.y))*p.tile.z+uint(x-int(p.tile.x))];}
+struct Stats {vec3 mean;vec3 noise;vec3 spatial;vec3 weight;};
+Stats gather(vec4 w) {
+    precise Stats s=Stats(vec3(0),vec3(0),vec3(0),vec3(0));
+    precise vec3 variance=vec3(0),sigma=vec3(0),weightedNoise=vec3(0);
+    ivec4 b=bounds(w);float inv=1.0/(p.policy2.y*p.policy2.y);
+    for(int y=b.y;y<=b.w;++y)for(int x=b.x;x<=b.z;++x) {
+        Evidence a=sampleAt(x,y);if(a.valid==0)continue;
         uint c=a.channel==3?2:(a.channel==0?0:1);
         vec2 d=vec2(x,y)-w.xy;
-        precise float distance=fine ? d.x*d.x*kernelMetric.x+2.0*d.x*d.y*kernelMetric.y+d.y*d.y*kernelMetric.z :
-            (d.x*d.x+d.y*d.y)*inv;
-        float k=exp(-0.5*distance);
-        s.mean[c]+=k*a.value;
-        s.weight[c]+=k;
-        s.varianceSum[c]+=k*k*a.variance;
-        if(p.geometry.z!=0) s.stddevSum[c]+=k*sqrt(a.variance);
-        if(!fine) s.spatial[c]+=k*a.value*a.value;
+        float k=exp(-0.5*(d.x*d.x+d.y*d.y)*inv);if(k<=0)continue;
+        float weight=s.weight[c]+k,delta=a.value-s.mean[c];
+        s.mean[c]+=(k/weight)*delta;s.spatial[c]+=k*delta*(a.value-s.mean[c]);s.weight[c]=weight;
+        variance[c]+=k*k*a.variance;weightedNoise[c]+=k*a.variance;if(p.geometry.z!=0)sigma[c]+=k*sqrt(a.variance);
     }
-    for(uint c=0;c<3;++c) if(s.weight[c]>1e-20) {
-        s.mean[c]/=s.weight[c];
-        s.noise[c]=(p.geometry.z!=0?s.stddevSum[c]*s.stddevSum[c]:s.varianceSum[c])/(s.weight[c]*s.weight[c]);
-        s.spatial[c]=max(0.0,s.spatial[c]/s.weight[c]-s.mean[c]*s.mean[c]-s.noise[c]);
+    for(uint c=0;c<3;++c)if(s.weight[c]>1e-20) {
+        s.noise[c]=(p.geometry.z!=0?sigma[c]*sigma[c]:variance[c])/(s.weight[c]*s.weight[c]);
+        float scatterNoise=max(0.0,weightedNoise[c]/s.weight[c]-(p.geometry.z!=0?0.0:s.noise[c]));
+        s.spatial[c]=max(0.0,s.spatial[c]/s.weight[c]-scatterNoise);
     }
     return s;
 }
+float smoothGate(float x) {x=clamp(x,0.0,1.0);return x*x*(3.0-2.0*x);}
+float phaseDiversity(Accumulator a,uint c,float weight) {
+    precise float re[4],im[4];
+    for(uint j=0;j<4;++j){re[j]=a.phaseCos[j][c]/weight;im[j]=a.phaseSin[j][c]/weight;}
+    float vx=max(0.0,1.0-re[0]*re[0]-im[0]*im[0]);
+    float vy=max(0.0,1.0-re[1]*re[1]-im[1]*im[1]);
+    float cr=re[3]-(re[0]*re[1]+im[0]*im[1]);
+    float ci=im[3]-(im[0]*re[1]-re[0]*im[1]);
+    float pr=re[2]-(re[0]*re[1]-im[0]*im[1]);
+    float pi=im[2]-(im[0]*re[1]+re[0]*im[1]);
+    return clamp(0.5*(vx+vy-sqrt((vx-vy)*(vx-vy)+4.0*(cr*cr+ci*ci+pr*pr+pi*pi))),0.0,1.0);
+}
+bool solveIntercept(vec4 gram[21],uint c,float weight,out float h[6]) {
+    precise float lower[36];
+    for(uint k=0;k<36;++k)lower[k]=0;
+    for(uint k=0;k<6;++k)h[k]=0;
+    for(uint i=0;i<6;++i)for(uint j=0;j<=i;++j) {
+        precise float x=gram[at(i,j)][c]/weight;
+        if(i==j && i!=0)x+=p.policy2.w;
+        for(uint k=0;k<j;++k)x-=lower[i*6+k]*lower[j*6+k];
+        if(i==j) {if(isnan(x)||isinf(x)||x<=1e-6)return false;lower[i*6+j]=sqrt(x);}
+        else lower[i*6+j]=x/lower[j*6+j];
+    }
+    precise float yy[6];
+    for(uint i=0;i<6;++i) {
+        precise float x=i==0?1.0:0.0;for(uint k=0;k<i;++k)x-=lower[i*6+k]*yy[k];
+        yy[i]=x/lower[i*6+i];
+    }
+    for(int i=5;i>=0;--i) {
+        precise float x=yy[i];for(int k=i+1;k<6;++k)x-=lower[k*6+i]*h[k];
+        h[i]=x/lower[i*6+i];if(isnan(h[i])||isinf(h[i]))return false;
+    }
+    return true;
+}
+void addFrameRoot(inout vec4 root[21],uint c,float inputRow[6]) {
+    precise float v[6];for(uint k=0;k<6;++k)v[k]=inputRow[k];
+    for(uint j=0;j<6;++j) {
+        float diagonal=root[at(j,j)][c];
+        float magnitude=sqrt(diagonal*diagonal+v[j]*v[j]);if(magnitude==0)continue;
+        float cosine=diagonal/magnitude,sine=v[j]/magnitude;root[at(j,j)][c]=magnitude;
+        for(uint k=j+1;k<6;++k) {
+            float old=root[at(k,j)][c];root[at(k,j)][c]=cosine*old+sine*v[k];v[k]=-sine*old+cosine*v[k];
+        }
+    }
+}
+float frameSquare(vec4 root[21],uint c,float h[6]) {
+    precise float sum=0;
+    for(uint j=0;j<6;++j){precise float v=0;for(uint k=j;k<6;++k)v+=root[at(k,j)][c]*h[k];sum+=v*v;}
+    return sum;
+}
+float quadraticForm(vec4 matrix[21],uint c,float h[6],bool absolute) {
+    precise float result=0;
+    for(uint i=0;i<6;++i)for(uint j=0;j<=i;++j) {
+        float left=absolute?abs(h[i]):h[i],right=absolute?abs(h[j]):h[j];
+        precise float term=(matrix[at(i,j)][c]*right)*left;
+        result+=(i==j?1.0:2.0)*term;
+    }
+    return max(0.0,result);
+}
 void main() {
-    uint i=gl_GlobalInvocationID.x+p.counts.y;
-    if(i>=p.counts.x) return;
+    uint i=gl_GlobalInvocationID.x+p.counts.y;if(i>=p.counts.x)return;
     if(p.counts.z==2) {
         precise State t=state[i];
-        precise Pixel o=Pixel(vec4(0),vec4(0),vec4(0),vec4(0));
+        precise Pixel o=Pixel(vec4(0),vec4(0),vec4(0),vec4(0),vec4(0),vec4(0));
         for(uint c=0;c<3;++c) {
             bool valid=(uint(t.anchor.mean.w)&(1u<<c))!=0;
-            if(t.accum.weight[c]>1e-20) {
-                float w=t.accum.weight[c];
-                float blend=valid?clamp((t.accum.nearWeight[c]-0.02)/0.08,0.0,1.0):1.0;
-                blend=blend*blend*(3.0-2.0*blend);
-                float value=t.accum.value[c]/w;
-                float variance=t.accum.variance[c]/(w*w);
-                float frameSquare=t.accum.frameWeightSquared[c]/(w*w);
-                float refFraction=t.accum.referenceWeight[c]/w;
-                o.rgb[c]=blend*value+(1.0-blend)*t.anchor.mean[c];
-                float sigma=blend*sqrt(variance)+(1.0-blend)*sqrt(t.anchor.noise[c]);
+            float weight=t.accum.gram[0][c];
+            if(weight>1e-20) {
+                float support=valid?smoothGate((t.accum.nearWeight[c]-0.02)/0.08):1.0;
+                float diversity=phaseDiversity(t.accum,c,weight);
+                if(support==0) {
+                    o.rgb[c]=t.anchor.mean[c];o.variance[c]=t.anchor.noise[c];o.effectiveFrames[c]=1;
+                    o.confidence[c]=0.01;o.samplingDiversity[c]=diversity;continue;
+                }
+                float snr=t.anchor.spatial[c]+4.0*t.anchor.noise[c];
+                float blend=p.policy2.z*smoothGate((diversity-0.01)/0.25)*(snr>0?t.anchor.spatial[c]/snr:0.0);
+                precise float h[6];for(uint j=0;j<6;++j)h[j]=0;
+                if(blend>0) {
+                    if(!solveIntercept(t.accum.gram,c,weight,h)){blend=0;for(uint j=0;j<6;++j)h[j]=0;}
+                    else blend*=smoothGate((p.policy3.x-h[0])/(0.5*p.policy3.x));
+                }
+                for(uint j=0;j<6;++j)h[j]*=blend;h[0]+=1.0-blend;
+                for(uint j=0;j<6;++j)h[j]/=weight;
+                precise float value=0,refFraction=0;
+                for(uint j=0;j<6;++j){value+=h[j]*t.accum.signal[j][c];refFraction+=h[j]*t.accum.referenceMoments[j][c];}
+                float variance=quadraticForm(t.accum.noiseGram,c,h,false)+quadraticForm(t.accum.noiseBoundGram,c,h,true);
+                float frameNorm=frameSquare(t.accum.frameRoot,c,h);
+                o.rgb[c]=support*value+(1.0-support)*t.anchor.mean[c];
+                float sigma=support*sqrt(variance)+(1.0-support)*sqrt(t.anchor.noise[c]);
                 o.variance[c]=sigma*sigma;
-                o.effectiveFrames[c]=1.0/max(1e-30,blend*blend*frameSquare+
-                    2.0*blend*(1.0-blend)*refFraction+(1.0-blend)*(1.0-blend));
-                o.confidence[c]=blend*min(1.0,t.accum.nearWeight[c])+(1.0-blend)*0.01;
+                o.effectiveFrames[c]=1.0/max(1e-30,support*support*frameNorm+
+                    2.0*support*(1.0-support)*refFraction+(1.0-support)*(1.0-support));
+                o.confidence[c]=support*min(1.0,t.accum.nearWeight[c])+(1.0-support)*0.01;
+                o.samplingDiversity[c]=diversity;o.modelBlend[c]=support*blend;
             } else if(valid) {
-                o.rgb[c]=t.anchor.mean[c];o.variance[c]=t.anchor.noise[c];
-                o.effectiveFrames[c]=1;o.confidence[c]=0.01;
+                o.rgb[c]=t.anchor.mean[c];o.variance[c]=t.anchor.noise[c];o.effectiveFrames[c]=1;o.confidence[c]=0.01;
             }
         }
         outputPixel[i]=o;return;
     }
     bool referenceFrame=p.counts.z==0;
-    vec4 w=warp[i];
-    if(!referenceFrame && w.z<p.policy2.x) return;
-    precise State t;
-    precise Stats broad;
+    WarpSample w=warp[i];if(!referenceFrame && w.position.z<p.policy2.x)return;
+    precise State t;precise Stats broad;
     if(referenceFrame) {
-        broad=gather(w,vec4(0),false);
+        broad=gather(w.position);
         t.anchor=Anchor(vec4(broad.mean,0),vec4(broad.noise,0),vec4(broad.spatial,0),
-            vec4(1.0/(p.policy.x*p.policy.x),0,1.0/(p.policy.x*p.policy.x),0));
-        for(uint c=0;c<3;++c) if(broad.weight[c]>1e-20) t.anchor.mean.w+=float(1u<<c);
-        t.accum=Accumulator(vec4(0),vec4(0),vec4(0),vec4(0),vec4(0),vec4(0));
-    } else {t=state[i];broad=gather(w,vec4(0),false);}
+            vec4(1.0/(p.policy.x*p.policy.x),0,1.0/(p.policy.x*p.policy.x),0),vec4(w.position.xy,0,0));
+        for(uint c=0;c<3;++c)if(broad.weight[c]>1e-20)t.anchor.mean.w+=float(1u<<c);
+        for(uint j=0;j<6;++j){t.accum.signal[j]=vec4(0);t.accum.referenceMoments[j]=vec4(0);}
+        for(uint j=0;j<21;++j){t.accum.gram[j]=vec4(0);t.accum.noiseGram[j]=vec4(0);t.accum.noiseBoundGram[j]=vec4(0);t.accum.frameRoot[j]=vec4(0);}
+        for(uint j=0;j<4;++j){t.accum.phaseCos[j]=vec4(0);t.accum.phaseSin[j]=vec4(0);}
+        t.accum.nearWeight=vec4(0);
+    } else {t=state[i];broad=gather(w.position);}
+    float amplitudeSquared=0;
+    for(uint c=0;c<3;++c)amplitudeSquared=max(amplitudeSquared,t.anchor.mean[c]*t.anchor.mean[c]+t.anchor.spatial[c]+t.anchor.noise[c]);
+    if(amplitudeSquared==0)for(uint c=0;c<3;++c)
+        amplitudeSquared=max(amplitudeSquared,broad.mean[c]*broad.mean[c]+broad.spatial[c]+broad.noise[c]);
+    float noiseFloor=p.policy.w*amplitudeSquared;
     float robust=1;
-    if(!referenceFrame) for(uint c=0;c<3;++c) {
-        if(broad.weight[c]<=1e-20 || (uint(t.anchor.mean.w)&(1u<<c))==0) continue;
+    if(!referenceFrame)for(uint c=0;c<3;++c) {
+        if(broad.weight[c]<=1e-20 || (uint(t.anchor.mean.w)&(1u<<c))==0)continue;
         float delta=broad.mean[c]-t.anchor.mean[c];
-        precise float scale=p.policy.y*p.policy.y*(t.anchor.noise[c]+broad.noise[c]+p.policy.w)+
-            p.policy.z*(t.anchor.spatial[c]+broad.spatial[c]);
-        float r=max(0.0,1.0-delta*delta/scale);
-        robust=min(robust,r*r);
+        precise float scale=p.policy.y*p.policy.y*(t.anchor.noise[c]+broad.noise[c]+noiseFloor+
+            p.policy.z*(t.anchor.spatial[c]+broad.spatial[c]));
+        float rr=scale>0?max(0.0,1.0-delta*delta/scale):(delta==0?1.0:0.0);robust=min(robust,rr*rr);
     }
-    robust*=referenceFrame?1:w.z;
+    robust*=referenceFrame?1:w.position.z;
     if(robust>0) {
-        precise Stats fine=gather(w,t.anchor.kernelMetric,true);
+        precise vec3 tapPrecision;
         for(uint c=0;c<3;++c) {
-            float kernelMetric=1.0/max(p.policy.w,t.anchor.noise[c]+(referenceFrame?t.anchor.noise[c]:broad.noise[c]));
-            float k=robust*kernelMetric;
-            float fw=fine.weight[c]*k;
-            t.accum.value[c]+=fw*fine.mean[c];t.accum.weight[c]+=fw;
-            float varNumerator=p.geometry.z!=0?fine.stddevSum[c]*fine.stddevSum[c]:fine.varianceSum[c];
-            t.accum.variance[c]+=k*k*varNumerator;
-            t.accum.frameWeightSquared[c]+=fw*fw;
-            t.accum.nearWeight[c]+=robust*fine.weight[c];
-            if(referenceFrame) t.accum.referenceWeight[c]=fw;
+            float noise=t.anchor.noise[c]+(referenceFrame?t.anchor.noise[c]:broad.noise[c]);
+            tapPrecision[c]=noise>0?noiseFloor/max(noiseFloor,noise):1.0;
+        }
+        uint basisCount=p.policy2.z>0?6u:1u;
+        precise vec3 frame[6],sigma[6];for(uint j=0;j<6;++j){frame[j]=vec3(0);sigma[j]=vec3(0);}
+        ivec4 b=bounds(w.position);vec4 jac=w.sourceToReference;
+        for(int y=b.y;y<=b.w;++y)for(int x=b.x;x<=b.z;++x) {
+            Evidence v=sampleAt(x,y);if(v.valid==0)continue;
+            uint c=v.channel==3?2:(v.channel==0?0:1);
+            vec2 d=vec2(x,y)-w.position.xy;
+            float rx=jac.x*d.x+jac.y*d.y,ry=jac.z*d.x+jac.w*d.y;
+            float distance=rx*rx*t.anchor.kernelMetric.x+2.0*rx*ry*t.anchor.kernelMetric.y+ry*ry*t.anchor.kernelMetric.z;
+            float spatial=exp(-0.5*distance),k=robust*tapPrecision[c]*spatial;
+            float u=rx/p.policy.x,tt=ry/p.policy.x;
+            float phi[6]=float[6](1,u,tt,u*u,u*tt,tt*tt);
+            t.accum.nearWeight[c]+=robust*spatial;
+            for(uint m=0;m<basisCount;++m) {
+                t.accum.signal[m][c]+=k*phi[m]*v.value;frame[m][c]+=k*phi[m];
+                if(p.geometry.z!=0)sigma[m][c]+=k*abs(phi[m])*sqrt(v.variance);
+                for(uint n=0;n<=m;++n) {
+                    float moment=phi[m]*phi[n];t.accum.gram[at(m,n)][c]+=k*moment;
+                    if(p.geometry.z==0)t.accum.noiseGram[at(m,n)][c]+=k*k*v.variance*moment;
+                }
+            }
+        }
+        vec2 delta=w.position.xy-t.anchor.referenceWarp.xy;
+        float phase[4]=float[4](delta.x,delta.y,delta.x+delta.y,delta.x-delta.y);
+        for(uint c=0;c<3;++c) {
+            for(uint m=0;m<basisCount;++m) {
+                if(referenceFrame)t.accum.referenceMoments[m][c]=frame[m][c];
+                for(uint n=0;n<=m;++n) {
+                    if(p.geometry.z!=0)t.accum.noiseBoundGram[at(m,n)][c]+=sigma[m][c]*sigma[n][c];
+                }
+            }
+            float frameMoments[6];for(uint m=0;m<6;++m)frameMoments[m]=frame[m][c];
+            addFrameRoot(t.accum.frameRoot,c,frameMoments);
+            for(uint m=0;m<4;++m) {
+                float angle=6.283185307179586*(phase[m]-floor(phase[m]));
+                t.accum.phaseCos[m][c]+=frame[0][c]*cos(angle);t.accum.phaseSin[m][c]+=frame[0][c]*sin(angle);
+            }
         }
     }
     state[i]=t;

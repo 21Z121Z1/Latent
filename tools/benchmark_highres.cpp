@@ -11,7 +11,7 @@
 #endif
 using namespace latent;
 namespace {
-struct Options {std::uint32_t width=512,height=384,frames=4,group=1,tile=128;bool gpu=false,estimated=false,chart=false;};
+struct Options {std::uint32_t width=512,height=384,frames=4,group=1,tile=128,scale=1;bool gpu=false,estimated=false,chart=false,gaussian=false;};
 // Noise-free colored constant RAW. The source is cheap, but reconstruction is
 // NOT bypassed; every output pixel executes the normal kernels/halos/fusion.
 class FlatRaw final:public runtime::RawTileSource {
@@ -67,14 +67,17 @@ void run(Options o) {
     else source=std::make_unique<FlatRaw>(burst);
     ChecksumSink sink;
     runtime::TiledReconstructionPolicy policy{};policy.tileSize=o.tile;policy.maximumFrames=o.frames;
+    if(o.scale==2)policy.kernel=reference::DirectKernelPolicy::superResolution();
+    if(o.gaussian)policy.kernel.quadraticStrength=0;
+    const runtime::ReconstructionGrid grid{{(o.width-1)*o.scale+1,(o.height-1)*o.scale+1},0,0,1.0F/static_cast<float>(o.scale),1.0F/static_cast<float>(o.scale)};
     runtime::ReconstructionCapabilities caps{};caps.hostBudgetBytes=128U*1024U*1024U;caps.preferVulkan=o.gpu;caps.collectGpuTimings=true;
     const auto before=peakRss();
-    const auto trace=runtime::reconstructRawTiles(burst,*source,{burst.extent},policy,caps,sink,
+    const auto trace=runtime::reconstructRawTiles(burst,*source,grid,policy,caps,sink,
         o.estimated?std::span<const runtime::ReconstructionMotion>{}:std::span(motion),imaging::FrameId{1});
     if(o.gpu&&!trace.plan.vulkan)throw std::runtime_error("requested GPU benchmark fell back: "+runtime::directReconstructionJson(trace));
-    if(sink.count!=burst.extent.pixelCount()*3)throw std::runtime_error("benchmark output count mismatch");
+    if(sink.count!=grid.extent.pixelCount()*3)throw std::runtime_error("benchmark output count mismatch");
     std::cout<<"{\"width\":"<<o.width<<",\"height\":"<<o.height<<",\"group\":"<<o.group
-        <<",\"source\":\""<<(o.chart?"analytic_area_chart":"periodic_flat_raw16")<<"\",\"registration\":\""
+        <<",\"output_scale\":"<<o.scale<<",\"source\":\""<<(o.chart?"analytic_area_chart":"periodic_flat_raw16")<<"\",\"registration\":\""
         <<(o.estimated?"estimated":"supplied")<<"\",\"peak_rss_before_bytes\":"<<before<<",\"peak_rss_after_bytes\":"<<peakRss()
         <<",\"checksum\":"<<sink.checksum<<",\"trace\":"<<runtime::directReconstructionJson(trace)<<"}\n"<<std::flush;
 }
@@ -84,16 +87,16 @@ int main(int argc,char** argv) {
         Options o;bool suite=false;
         for(int i=1;i<argc;++i) {
             const std::string key=argv[i];
-            if(key=="--suite"){suite=true;continue;}if(key=="--gpu"){o.gpu=true;continue;}
+            if(key=="--suite"){suite=true;continue;}if(key=="--gaussian"){o.gaussian=true;continue;}if(key=="--gpu"){o.gpu=true;continue;}
             if(key=="--estimated"){o.estimated=true;continue;}if(key=="--chart"){o.chart=true;continue;}
             if(i+1>=argc)throw std::invalid_argument("missing numeric option value");
             std::size_t consumed=0;const std::string value=argv[++i];const auto n=std::stoul(value,&consumed);
             if(consumed!=value.size()||!n||n>1000000)throw std::invalid_argument("invalid benchmark integer");
             const auto number=static_cast<std::uint32_t>(n);
             if(key=="--width")o.width=number;else if(key=="--height")o.height=number;else if(key=="--frames")o.frames=number;
-            else if(key=="--group")o.group=number;else if(key=="--tile")o.tile=number;else throw std::invalid_argument("unknown option");
+            else if(key=="--scale")o.scale=number;else if(key=="--group")o.group=number;else if(key=="--tile")o.tile=number;else throw std::invalid_argument("unknown option");
         }
-        if(o.frames>32||o.group>16)throw std::invalid_argument("benchmark policy exceeds supported bounds");
+        if(o.frames>32||o.group>16||o.scale>2)throw std::invalid_argument("benchmark policy exceeds supported bounds");
         if(suite) {for(auto g:{1U,2U,3U,4U})for(auto n:{1U,4U}){o.group=g;o.frames=n;run(o);}}
         else run(o);
     }catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}

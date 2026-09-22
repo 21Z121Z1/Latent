@@ -359,6 +359,28 @@ SceneFrame
 
 Gain-map math relates explicit display renditions and belongs to the codec integration layer, not RAW reconstruction or the scene master. The external dependency is isolated in `latent::codec` so its build/fast-FP policy cannot contaminate deterministic reference targets. JPEG integration is exercised; HEIF/AVIF still need complete dependency/platform validation.
 
+### 6.7 Direct joint RAW reconstruction
+
+The specialized `reconstructRawTiles` adapter consumes the canonical `RawBurst`,
+`SensorSampling`, correspondence observations, delegated kernel policy and
+capabilities. It streams normalized original CFA samples into the FP32 reference
+or Vulkan executor, with bounded source/warp/moment/output arenas. The direct
+operation jointly reconstructs camera RGB at an explicit reference-coordinate
+output grid; it need not first create a resampled CFA frame.
+
+`latent.direct-cfa.2` adds dimensionless robust weighting, phase-admitted local
+polynomial fitting and conditional signed uncertainty. A Gaussian fallback and
+N=1 specialization retain conservative behavior when evidence cannot support the
+fit. Sampling support and quality are not interchangeable. Output is explicitly
+green-balanced **camera-linear RGB**, not yet an AP1/D60 `SceneFrame`; WB/color
+conversion, scene semantics, rendering and codec authority remain downstream.
+No learned weights or unlicensed JSR implementation are imported.
+
+The [joint RAW specification](joint-raw-reconstruction.md) records mathematics,
+provenance, precision/uncertainty conditions, memory and wire compatibility,
+reproducible tests and limits. This adapter is not the future general graph
+compiler, and its software evidence does not establish physical-device quality.
+
 ## 7. Precision policy
 
 - Reference reconstruction/rendering: deterministic FP32 behavior.
@@ -429,11 +451,14 @@ Current request/config structs sometimes mix observed/calibrated parameters, fix
 
 **Direction:** create `ExecutionPlan`/`ExecutionTrace` before substantial burst/multi-pass complexity.
 
-### 9.8 Capture and temporal semantics are missing
+### 9.8 Capture and temporal lowering remain specialized
 
-Android NDK capture contracts, recorded metadata fixtures, `RawBurst`, alignment, robust merge, temporal uncertainty, and multi-frame lifetime management are not yet implemented.
-
-**Direction:** add them through new semantic/observation objects and temporal operations, not by expanding `RawFrame` or the Vulkan runner ad hoc.
+Typed RAW bursts, capture planning, continuous guide registration and bounded
+direct reconstruction now exist. Their specialized runtime plans and traces are
+not a general semantic graph compiler. Broader device adaptation, optical/scene
+reconstruction integration and physical-device validation remain incomplete;
+absence of the general compiler must not be described as absence of these
+implemented temporal operations.
 
 ### 9.9 Static system introspection and artifact compatibility are under-modeled
 

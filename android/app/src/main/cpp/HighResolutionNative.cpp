@@ -1,6 +1,7 @@
 #include "NativeTransport.h"
 #include "latent/runtime/TiledReconstruction.h"
 #include <bit>
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <locale>
@@ -30,18 +31,28 @@ public:
         header_=file_.tellp();if(header_<0){file_.close();std::error_code error;std::filesystem::remove(partial_,error);throw std::runtime_error("cannot create output");}
     }
     ~PixelFile() override {file_.close();if(!published_){std::error_code error;std::filesystem::remove(partial_,error);}}
-    std::uint64_t residentBytes() const override{return 8192;}
+    std::uint64_t residentBytes() const override{return 8192+sizeof(row_);}
     void write(imaging::SensorRect tile,std::span<const reference::ReconstructedPixel> pixels) override {
+        if(tile.width>512 || pixels.size()!=static_cast<std::size_t>(tile.width)*tile.height)
+            throw std::invalid_argument("output tile exceeds wire row arena");
         for(std::uint32_t y=0;y<tile.height;++y) {
-            const auto offset=(static_cast<std::uint64_t>(tile.y+y)*extent_.width+tile.x)*sizeof(reference::ReconstructedPixel);
+            for(std::uint32_t x=0;x<tile.width;++x) {
+                const auto& v=pixels[static_cast<std::size_t>(y)*tile.width+x];
+                std::copy(v.rgb.begin(),v.rgb.end(),row_[x].begin());
+                std::copy(v.variance.begin(),v.variance.end(),row_[x].begin()+4);
+                std::copy(v.effectiveFrames.begin(),v.effectiveFrames.end(),row_[x].begin()+8);
+                std::copy(v.confidence.begin(),v.confidence.end(),row_[x].begin()+12);
+            }
+            const auto offset=(static_cast<std::uint64_t>(tile.y+y)*extent_.width+tile.x)*sizeof(row_[0]);
             file_.seekp(header_+static_cast<std::streamoff>(offset));
-            file_.write(reinterpret_cast<const char*>(pixels.data()+static_cast<std::size_t>(y)*tile.width),
-                static_cast<std::streamsize>(tile.width*sizeof(reference::ReconstructedPixel)));
+            file_.write(reinterpret_cast<const char*>(row_.data()),
+                static_cast<std::streamsize>(tile.width*sizeof(row_[0])));
             if(!file_)throw std::runtime_error("reconstruction output write failed (disk full?)");
         }
     }
     void publish(){file_.flush();if(!file_)throw std::runtime_error("output flush failed");file_.close();std::filesystem::rename(partial_,path_);published_=true;}
 private:
+    std::array<std::array<float,16>,512> row_{};
     std::filesystem::path path_,partial_;imaging::Extent extent_;std::ofstream file_;std::streamoff header_=0;bool published_=false;
 };
 void translate(JNIEnv* e) {

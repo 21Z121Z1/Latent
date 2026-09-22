@@ -259,3 +259,18 @@ At minimum CI should be able to assert:
 - separation from runtime capability values and live delivery state;
 - explicit compatibility/version failure for unsupported persisted artifacts;
 - a machine-readable catalog dump can be produced without source-tree archaeology.
+
+
+## Joint direct-RAW reconstruction gates
+
+`latent_joint_raw_tests` and `latent_joint_raw_vulkan_tests` add independent
+photosite-integrated, same-output-grid SR ablations; positive gain/variance
+metamorphism; insufficient-phase and axis-constant controls; frozen signed
+coefficient/Monte Carlo uncertainty oracles; mixed/remosaic correlation bounds;
+and cropped/grouped tile invariance. The Vulkan variant must execute the real
+backend when `LATENT_REQUIRE_VULKAN=1`. Existing grouped-CFA differential
+tolerances are retained, with explicit phase/model tolerances added. Border
+conditioning and square-root frame statistics are fixes, not reasons to loosen
+RGB or effective-frame gates. See the [specification](joint-raw-reconstruction.md)
+for exact hypotheses, policies, reproduction commands and limits. Android's V1
+file-size test remains required after changing the in-memory pixel structure.

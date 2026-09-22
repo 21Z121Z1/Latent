@@ -1,10 +1,15 @@
 # Plan 0004: Continuous observation reconstruction
 
-Status: Active. PR #18 is intentionally stacked on unmerged PR #17 at
-`a13a46a1f7c5d2eeec9a170ea6bd1a14f159d0c7`. PR #19 reconciles the parallel
-registration increment on PR #18 (`3d5cdfcba89f295fa6be79653e0a1793a4073109`)
-with a non-rewriting merge. The cubic guide is the only canonical solver;
-the superseded bilinear implementation is not retained as another backend.
+Status: Active
+Owner: Latent reconstruction engineering
+Related: ADR 0005; Plan 0005
+Current step: continuous registration is implemented; direct joint reconstruction delivery is tracked by Plan 0005.
+
+The previously recorded unmerged PR #17/#18 base is historical, not an active
+instruction to branch from it. Live reconciliation found the continuous solver
+in current main and the most advanced direct/grouped-CFA work in PR #20; the
+explicit active dependency is recorded in Plan 0005. The cubic guide remains
+the only canonical solver; no superseded bilinear backend is retained.
 Scope: continuous registration and direct, noise-aware sample reconstruction;
 capture/export/production increments follow their own applicable gates.
 
@@ -62,9 +67,10 @@ Android schema/null-prior changes require new assemble/lint/JVM/installed-APK
 instrumentation. Actions evidence is bound in the PR, not inferred from the
 stacked base or superseded increment's green runs.
 
-Direct sample reconstruction, conditional SR, explicit per-sample visibility,
-computational RAW export, expanded capture policy, and reduced GPU traffic remain
-implementation work, not capabilities established by this registration increment.
+Direct grouped-CFA sample reconstruction and its conditional joint-SR increment
+are now tracked by [Plan 0005](0005-jsr-informed-joint-raw.md), not left as missing
+registration work. This registration evidence does not by itself establish
+computational RAW export, general visibility, optical inversion or device quality.
 
 A fixed seven-frame Google HDR+ burst was acquired separately for evaluation:
 `0006_20160722_115157_431`, object generations and checksums retained outside the
