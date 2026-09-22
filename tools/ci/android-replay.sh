@@ -33,3 +33,5 @@ adb shell settings put global animator_duration_scale 0
 adb shell input keyevent 82
 cd android
 ./gradlew --no-daemon --stacktrace --max-workers=2 connectedDebugAndroidTest
+adb exec-out run-as dev.latent.camera cat files/replay-result.png > "$root/build-host/android-replay-result.png"
+test -s "$root/build-host/android-replay-result.png"

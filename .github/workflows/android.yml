@@ -69,3 +69,4 @@ jobs:
             build-host/android-emulator.log
             build-host/android-logcat.log
             build-host/android-screenshot.png
+            build-host/android-replay-result.png

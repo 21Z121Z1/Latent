@@ -2,7 +2,7 @@
 
 Latent is an experimental scene-referred computational-photography core for Android. Its architectural center is not Vulkan or a sequence of filters: it is a **typed semantic imaging model** backed by deterministic reference semantics, a backend-independent graph/compiler direction, production Vulkan lowerings, and differential verification.
 
-APIs are still evolving. The merged implementation already covers a substantial single-RAW path plus independent SDR/HDR reference rendering and the first output/codec integration. Android capture, burst reconstruction, a complete graph compiler/execution plan, and production Vulkan rendering remain planned or incomplete.
+APIs are still evolving. The implementation includes single-RAW and temporal RAW reconstruction, an Android Camera2/Compose app, independent SDR/HDR reference rendering, and output/codec integration. The general graph compiler, GPU-resident end-to-end processing, joint multi-frame super-resolution, and computational DNG export are not complete.
 
 ## System at a glance
 
@@ -10,9 +10,11 @@ APIs are still evolving. The merged implementation already covers a substantial 
 capture / recorded input
         |
         v
-RawFrame                         sensor-referred
+RawFrame / RawBurst               sensor-referred observations
         |
-        | normalize / correct / demosaic / color
+        +--> normalize / register / robust CFA fusion --> FusedRaw
+        |                                                  |
+        +---------------- demosaic / color ----------------+
         v
 SceneFrame                       scene-referred, linear AP1/D60,
         |                        unbounded, negative-preserving
@@ -53,11 +55,15 @@ The rule is: **semantics define what an image means; observations say what was l
 
 ## Current capability
 
-The merged implementation includes:
+The current code includes:
 
 - explicit sensor / scene / display reference-domain types and validation;
 - `RawFrame`, `SceneFrame`, and `RenderedFrame` contracts with provenance/confidence-aware metadata;
-- deterministic FP32 single-RAW reconstruction with negative and >1 scene values preserved;
+- deterministic FP32 reconstruction with negative and >1 scene values preserved;
+- typed `RawBurst`, multi-source lineage, a temporal execution plan, and bounded streaming fusion;
+- global/local translation, same-CFA fractional sampling, noise-aware robust fusion, and conditional uncertainty;
+- a Vulkan 1.1 FP32 fusion lowering with CPU differential and resource-lifetime tests;
+- Camera2 preview/RAW capture, constant-exposure capture policy, timestamp-matched JNI borrowing, Material 3 UI, fixture replay, and transactional JPEG/MediaStore output;
 - DNG Chapter 6 dual-illuminant color science, Bradford adaptation, Robertson CCT, and camera -> XYZ D50 -> ACEScg/AP1 D60 transforms;
 - Malvar-He-Cutler demosaic plus a retained deterministic box baseline;
 - defect correction, Android-convention lens shading, and lazy propagated-noise semantics validated by Monte Carlo tests;
@@ -66,7 +72,7 @@ The merged implementation includes:
 - scene analysis and independent deterministic SDR/HDR reference rendering;
 - explicit SDR/HDR rendition staging plus optional external libultrahdr integration, with real JPEG Ultra HDR encode/probe coverage in CI.
 
-Important boundaries remain deliberate: AHardwareBuffer import execution is not yet an Android-device implementation; `ComputeRunner` is still a synchronous correctness harness; rendering has no production Vulkan lowering yet; HEIF/AVIF routing is not yet fully integration/device validated; burst reconstruction is not implemented; the complete graph compiler, authority-separated contexts, `ExecutionPlan`, and `ExecutionTrace` are target architecture rather than current APIs.
+Important boundaries remain deliberate: AHardwareBuffer import execution is not yet an Android-device implementation; `ComputeRunner` is still a synchronous correctness harness; rendering has no production Vulkan lowering yet; HEIF/AVIF routing is not yet fully integration/device validated; normalization and temporal registration are CPU stages; joint multi-frame SR and computational DNG export are absent. The temporal plan is not the complete general graph compiler or authority-separated control plane. Physical RAW/HAL/IMU behavior, mobile GPU performance, thermals, and actual external-memory traffic are **UNVERIFIED — DEVICE ONLY**; emulator and software Vulkan evidence do not establish them.
 
 For the exact current PR/head/review/CI state, query GitHub. README intentionally does not mirror volatile delivery snapshots.
 
@@ -120,8 +126,23 @@ cmake --build build-uhdr --parallel
 ctest --test-dir build-uhdr --output-on-failure --verbose
 ```
 
+Android (JDK 17, the SDK/NDK versions pinned in `android/app/build.gradle.kts`):
+
+```bash
+cmake -S . -B build-host -DLATENT_BUILD_TESTS=OFF -DCMAKE_BUILD_TYPE=Release
+cmake --build build-host --target glslang-standalone --parallel
+cd android
+./gradlew --no-daemon assembleDebug testDebugUnitTest lintDebug
+```
+
+The debug APK contains `arm64-v8a` and `x86_64`. A camera without a supported
+RAW/control combination remains preview-only; fixture replay is explicitly
+labelled synthetic. CI installs the APK on an API 35 emulator and exercises
+JNI, cancellation, CFA metadata transport, Compose, and MediaStore transactions.
+Reports, APKs, and the in-test result screenshot are exact-head Actions artifacts.
+
 ## How to read the project
 
 For implementation work, start with `AGENTS.md`, then read only the relevant semantic contract and its tests. For stable system design, read `docs/architecture.md` and applicable ADRs. For capability maturity and what should be built next, read `docs/roadmap.md`. For an active multi-step implementation, use `docs/plans/`. For evidence requirements, use `docs/verification.md`. For live delivery state, query GitHub directly.
 
-Apache-2.0. See [`LICENSE`](LICENSE) and [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md`).
+Apache-2.0. See [`LICENSE`](LICENSE) and [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).

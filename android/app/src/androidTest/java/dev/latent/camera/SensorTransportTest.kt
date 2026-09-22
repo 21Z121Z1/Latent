@@ -81,4 +81,20 @@ class SensorTransportTest {
             assertEquals(400,frames.getJSONObject(index).getInt("iso"))
         }
     }
+
+    @Test fun captureTraceDistinguishesAvailableMotionFromAppliedPolicy() {
+        val caps = CaptureCapabilityInput(true,true,true,100_000,200_000_000,33_333_333,1_000_000_000,
+            50,3200,128_000_000,8_000_000,8)
+        fun plan(speed: Float, comparable: Boolean) = JSONObject(NativeBridge.capturePlan(
+            CaptureObservationInput(20_000_000,33_333_333,400,true,0.0001f,speed,comparable),
+            CaptureIntentInput(),caps))
+        assertFalse(plan(0.001f,true).getBoolean("motionConstraintUsed"))
+        assertFalse(plan(1f,false).getBoolean("motionConstraintUsed"))
+        val constrained = plan(1f,true)
+        assertTrue(constrained.getBoolean("motionConstraintUsed"))
+        assertFalse(constrained.getBoolean("noiseEstimated"))
+        assertTrue(constrained.getBoolean("qualityLimited"))
+        assertTrue(constrained.getJSONArray("frames").getJSONObject(0).getLong("exposureNs") <= 1_500_001)
+    }
+
 }

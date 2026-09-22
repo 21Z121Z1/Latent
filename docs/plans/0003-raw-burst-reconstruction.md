@@ -1,98 +1,88 @@
 # Plan 0003: Temporal RAW reconstruction and Android capture
 
-Status: Active
-Related: ADR-0001 through ADR-0005; Plans 0001 and 0002
-Current step: Pass latest-SHA Android/native CI, then perform the final independent review.
+Status: In review — first-generation scope; subsequent reconstruction work belongs in a stacked follow-up.
+Related: ADR-0005; Plans 0001 and 0002 remain independently scoped.
 
-## Scope and authority
+## Implemented boundary
 
-Implement one clean-room temporal RAW path. Keep the deterministic C++ oracle
-and existing Vulkan backend. Kotlin and Compose own Android UI and Camera2.
-Do not create a second backend solely to add Rust.
+The default burst entry point compiles one typed temporal plan: reference selection,
+normalization, global/tile translation, robust same-CFA fusion, and scene reconstruction.
+N=1 preserves single-RAW image semantics. Exposure/gain coordinates scale variance
+quadratically; ISO remains an observation, not measured effective gain. Conditional
+aleatoric variance does not include adaptive-weight or geometry uncertainty.
 
-This work adds the required P0 slice: typed burst identity, multi-source lineage,
-physical bindings, canonical temporal stages, and a versioned plan and trace.
-It does not complete the general graph compiler or Plans 0001 and 0002.
+One Vulkan backend lowers FP32 sampling, weighting, progressive accumulation, and
+regional support. Normalization and registration remain on the CPU. A persistent
+source buffer bounds fusion payload; no end-to-end GPU-residency or zero-copy claim.
 
-## Implemented increments
+Android owns Camera2 preview/capture, converged constant-exposure CapturePlan,
+timestamp pairing, borrowed RAW16 JNI, Compose controls, and transactional JPEG output.
+Cancellation starts a new camera/reader generation. Image leases outlive synchronous
+JNI and are released before orientation/encoding. Unknown sensor resampling fails
+explicitly. Dynamic Camera2 color is labelled an estimate, not DNG calibration.
 
-- Start from freshly queried main `28535ff41ead853a219ad4003a1300a7dbf6ac07`.
-  The new branch is `feat/temporal-raw-android`, draft PR 17. The two unmerged
-  implementation commits from PR 16 are reused with their history intact.
-- Deterministic selection, gain-aware radiometry, multiscale/local registration,
-  same-channel CFA sampling, Tukey fusion, conditional uncertainty, and scene
-  reconstruction are implemented. Each stage retains separate confidence terms.
-- Vulkan lowers sampling, weights, persistent accumulation, and regional support
-  to FP32 compute. Normalization and registration remain CPU stages. No FP16
-  arithmetic or storage is used. One current source buffer is reused.
-- CapturePlan separates observations, intent, and capabilities. Constant exposure
-  uses measured sensor results. ISO is not reclassified as physical gain. Gyro
-  constrains capture only when its clock is comparable and its samples are fresh.
-- Android contains Camera2 preview and RAW capture, timestamp pairing, borrowed
-  direct-buffer JNI, fixture replay, Material 3 controls, and transactional
-  MediaStore output. Cancellation starts a new camera/reader generation. A reader
-  cannot close while native execution retains an Image lease. Preview is separate
-  from reconstruction. The RAW leases are released before JPEG work.
-- Native code maps crop phase and sensor-layout metadata. JVM tests cover lifetime,
-  pairing, cancellation, and gyro admission. Instrumentation tests exercise JNI,
-  all CFA crop phases, real replay rendering, UI transitions, and MediaStore rollback.
+## Final audit corrections
 
-## Remaining acceptance work
-
-1. Pass assembly, lint, unit tests, native loading, and fixture UI flow on the
-   current Android increment. Earlier APK assembly is not current-code evidence.
-2. Inspect current-SHA Actions jobs, steps, logs, artifacts, APK, and emulator replay.
-3. Review the full diff independently and close any semantic or lifetime defects.
-
-Reference gates cover validation, lineage, N=1 image equivalence, all Bayer
-layouts, odd borders, sub-black, radiometric variance scaling, translations,
-motion rejection, clipping, replay, and Monte Carlo calibration. A band-limited
-sub-pixel fixture now gates displacement error and usable alignment confidence.
-An eight-frame full-pipeline fixture gates mean drift, MSE reduction, conditional
-variance calibration, and effective support. Fixed-weight and conditional variance
-evidence do not establish unconditional calibration of adaptive weights.
+- Export the native policy's motion/noise/quality flags through JNI. Available gyro
+  evidence and an actually applied exposure constraint are separate trace fields.
+- Preserve the original nonlinear-texture fractional-displacement fixture alongside
+  the newer band-limited test; neither tolerance is weakened.
+- Capture the result UI inside instrumentation, before activity teardown. A cleanup
+  screenshot of the launcher is not visual evidence of the camera result.
+- Remove obsolete Android/lint/PR status from this plan and README.
 
 ## Verification ledger
 
-| Requirement | Environment | Evidence | Status | Latest SHA |
-| --- | --- | --- | --- | --- |
-| Fresh unchanged baseline | GitHub Ubuntu 24.04, lavapipe | Run 35520430992, fresh job 106245198495; native 5/5, no-Vulkan 4/4, Ultra HDR 4/4; complete log inspected | VERIFIED | 28535ff41ead853a219ad4003a1300a7dbf6ac07 |
-| Baseline reproduced locally | GCC strict, SwiftShader | Explicit ICD and required-Vulkan run 5/5; no-Vulkan 4/4, no execution skip | VERIFIED | 28535ff41ead853a219ad4003a1300a7dbf6ac07 |
-| Capture policy and cancellation | Local strict builds and Actions run 35573951380 | no-Vulkan 6/6; real Vulkan 8/8; native/sanitizer jobs succeeded | VERIFIED | 8c739bb5abe9163b2c785149980535102ba90394 |
-| Temporal reference, CFA transport, and Vulkan differential | Local GCC strict, SwiftShader | no-Vulkan 7/7; Vulkan 9/9; band-limited sub-pixel error <=0.25 px with usable confidence; 8-frame MSE ratio 0.133 and conditional variance ratio 0.967; 478381 differential values with observed max error 0; 320 progressive dispatches | VERIFIED | 0a7d21d18841c0499947a51e7dd2096842cbf32c |
-| Host/software execution benchmark | Local GCC strict, SwiftShader | 257x193x4, 3 repeats; reference median about 1.21 s; Vulkan-path median about 1.17 s; Vulkan working-set bound 7,968,416 bytes; concurrent source frames 1. This is not mobile-performance evidence. | VERIFIED | 0a7d21d18841c0499947a51e7dd2096842cbf32c |
-| Initial Android assembly and parser tests | Actions run 35576794534, job 106260342510 | Both ABIs and APK assembled; parser unit tests passed; lint reported 16 errors; full log/report inspected | PARTIALLY VERIFIED | d106516924160ff714700d17b4599642ccd77ade |
-| Current Camera2/UI/JNI integration | Actions required | Camera2 RAW capture, metadata transport, resource lifetime, UI, updated SDK/dependencies, and tests are committed; latest-SHA assembly/lint/emulator replay remain required | UNVERIFIED | 0a7d21d18841c0499947a51e7dd2096842cbf32c |
-| Real RAW, metadata, IMU, OEM, external import | Physical Android device | No device connected | UNVERIFIED | Not applicable |
-| Mobile latency, thermals, energy, memory traffic | Physical Android device | No device connected | UNVERIFIED | Not applicable |
+The recovered implementation was `3d8c5d758a4151cddc298e149d985c74af4c431d`.
+Its exact-head runs and downloaded artifacts were independently checked on 2026-09-22:
 
-## Environment and clean-room record
+| Gate | Evidence on recovered head | Result |
+| --- | --- | --- |
+| Native strict/Vulkan/SPIR-V | Actions 35680461646, linux job 106596124264; artifact 10674932404; all steps successful, 9/9 CTest | VERIFIED |
+| No-Vulkan and libultrahdr 2.0.2 | Same linux job and archived LastTest logs; 7/7 each | VERIFIED |
+| Clang ASan/UBSan | Same run, job 106596124505; artifact 10674952223; 7/7 | VERIFIED |
+| Android assemble/lint/JVM | Actions 35680461644, job 106596124182; artifact 10674457303; both ABIs, 8 JVM tests, no lint issues | VERIFIED |
+| Installed APK/JNI/Compose/MediaStore | Same Android artifact; 7 instrumentation tests, no failures/errors/skips | VERIFIED |
+| Independent local reproduction | Artifact checksums and Git bundle checked; GCC strict + explicit SwiftShader ICD, 9/9 CTest | VERIFIED |
 
-The container cannot resolve external hosts and has no Android SDK. Chromium's
-SwiftShader provides a real local Vulkan ICD. Actions supplies lavapipe and the
-Android toolchain. Reproduction artifacts supply fixed sources and Git bundles;
-artifact digests and internal checksums are checked.
+The audit corrections require **new exact-head** native/sanitizer and Android runs.
+The final review record in PR #17 binds the reviewed SHA, run/job IDs, artifact
+checksums, and outcomes. A green run from the recovered head is not a pass for a
+later revision. All required workflows check out the PR head rather than its merge ref.
 
-The initial Android lint failure exposed old SDK/dependency pins, missing explicit
-backup exclusions, and unused UI resources. The active increment updates compatible
-fixed toolchain versions and connects the controls. It does not suppress these checks.
+Recovered-head quantitative evidence: 478,381 CPU/Vulkan values had observed max
+error 0 (not a universal bit-exactness claim); 320 lifetime dispatches passed.
+Eight-frame static MSE ratio was 0.133149, conditional variance ratio 0.967070,
+and mean effective support 7.85266. Band-limited displacement error was 0.25 px;
+the restored nonlinear-texture case has 0.5 px error per axis under its original
+0.6 px bound. These expose first-generation limits, not general registration quality.
 
-The earlier contract iteration reported directory-only inspection of the uploaded
-archive. This implementation iteration has not opened it. No Apple private code,
-parameters, tuning, topology, or weights are implementation inputs. No third-party
-HDR+ implementation is copied. The public HDR+ project and paper abstract were read;
-no full-paper review is claimed where the PDF was not retrieved.
+The archived 257x193x4, three-repeat host benchmark measured reference median
+1373.86 ms and Vulkan-path median 1347.89 ms, admission bound 7,968,416 bytes,
+and one concurrent source frame. This is software-runner regression evidence,
+not mobile performance or a measured peak allocation/traffic count.
 
-The Android adapter follows these public definitions:
+## Device-only and next-generation boundaries
 
-- https://developer.android.com/reference/android/hardware/camera2/CameraCharacteristics
-- https://developer.android.com/reference/android/hardware/camera2/CaptureResult
-- https://developer.android.com/build/releases/agp-9-4-0-release-notes
-- https://developer.android.com/build/migrate-to-built-in-kotlin
-- https://gradle.org/release-checksums/
+**UNVERIFIED — DEVICE ONLY:** real RAW delivery/calibration, OEM stream combinations,
+IMU clock relation, external-memory traffic, mobile GPU latency, energy, thermal
+behavior, display appearance, and cross-device image quality.
 
-AOSP DngCreator JNI was inspected only to cross-check documented RAW dimensions and
-LSC coordinates. Its header specifies Apache-2.0. No implementation was ported.
-Unknown resampled sensor modes fail explicitly. The dynamic Camera2 color transform
-is labelled an estimate, not a DNG-profile calibration. External-memory capture import,
-learned stages, and adaptive bracketing are not implemented. No zero-copy claim is made.
+Joint SR, explicit visibility/occlusion modeling, bracketed/ZSL capture,
+computational DNG, and GPU-resident normalization/registration are not implemented
+by this plan. They require independent quality gates, not broader claims for #17.
+
+## Reproduction and provenance
+
+The local container has no external DNS or Android SDK. Checked Actions artifacts
+supply pinned source/dependency archives and Git history; SwiftShader supplies the
+local Vulkan execution environment. Actions supplies lavapipe and Android/KVM.
+No Apple archive, private parameter, kernel, topology, or weight was used during
+this audit. No third-party HDR+ implementation was copied.
+
+Camera transport follows the public CameraCharacteristics, CaptureResult, and
+LensShadingMap contracts at developer.android.com. Black/noise use sensor-layout
+order; white balance/shading use R, green-even, green-odd, B. Native CFA phase
+mapping and independent Android fixtures test this distinction. Public research
+for a subsequent algorithm revision must be read and recorded in that revision;
+this delivery audit is not a claim of implementing a paper or Project Indigo.

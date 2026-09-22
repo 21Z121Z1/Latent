@@ -386,7 +386,7 @@ internal class CameraController(context: Context) : AutoCloseable, SensorEventLi
             val frames = plan.getJSONArray("frames")
             require(frames.length() in 1..8)
             capture.plan = JSONObject().put("policy", plan).put("gyroTimestampComparable", comparable)
-                .put("gyroUsed", motion != null).put("totalBudgetBytes", totalBudget)
+                .put("gyroAvailable", motion != null).put("totalBudgetBytes", totalBudget)
                 .put("advertisedRawStallNs", stallDuration)
             if (motion != null) capture.plan.put("angularSpeedRadiansPerSecond", motion)
             capture.count = frames.length()

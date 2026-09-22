@@ -86,6 +86,16 @@ void translation() {
         near(a.global.dx,dx,0.1F,"integer/large horizontal displacement gate");
         near(a.global.dy,dy,0.1F,"integer/large vertical displacement gate");
     }
+    {
+        auto r = test::frame(1, {161,129}, imaging::CfaPattern::RGGB,0,0,0.001F);
+        auto s = test::frame(2, {161,129}, imaging::CfaPattern::RGGB,0.75F,-1.25F,0.001F);
+        const auto rn = reference::normalizeTemporalRaw(runtime::viewRawFrame(r), r, {}, false);
+        const auto sn = reference::normalizeTemporalRaw(runtime::viewRawFrame(s), r, {}, false);
+        const auto a = reference::alignTemporalRaw(rn,sn,imaging::FrameId{1},imaging::FrameId{2},{});
+        std::cout << "nonlinear texture subpixel=" << a.global.dx << ',' << a.global.dy << '\n';
+        near(a.global.dx,0.75F,0.6F,"nonlinear-texture horizontal displacement");
+        near(a.global.dy,-1.25F,0.6F,"nonlinear-texture vertical displacement");
+    }
     const auto bandLimited = [](float x, float y, std::size_t) {
         return 0.35F + 0.08F * std::sin(0.035F*x + 0.021F*y) +
             0.05F * std::cos(0.027F*x - 0.031F*y) + 0.04F * std::sin(0.009F*x + 0.015F*y);

@@ -333,7 +333,10 @@ jstring capturePlan(JNIEnv* e, jobject observation, jobject intent, jobject capa
     const auto plan = runtime::compileCapturePlan(obs, aim, caps);
     std::ostringstream json; json.imbue(std::locale::classic());
     json << "{\"schemaVersion\":1,\"manual\":" << (plan.control == runtime::ExposureControl::Manual ? "true" : "false")
-         << ",\"reason\":\"" << escape(plan.reason) << "\",\"frames\":[";
+         << ",\"reason\":\"" << escape(plan.reason) << "\""
+         << ",\"motionConstraintUsed\":" << (plan.motionConstraintUsed ? "true" : "false")
+         << ",\"noiseEstimated\":" << (plan.noiseEstimated ? "true" : "false")
+         << ",\"qualityLimited\":" << (plan.qualityLimited ? "true" : "false") << ",\"frames\":[";
     for (std::size_t n = 0; n < plan.frames.size(); ++n) {
         if (n) json << ',';
         const auto& f = plan.frames[n];

@@ -196,7 +196,7 @@ private fun diagnosticSummary(trace: String): String {
     }
     json.optJSONObject("capture")?.let { capture ->
         text.appendLine(capture.getJSONObject("policy").getString("reason"))
-        text.appendLine("Gyro used: ${capture.getBoolean("gyroUsed")}. Physical synchronization is not calibrated by this app.")
+        text.appendLine("Gyro available: ${capture.getBoolean("gyroAvailable")}; exposure constrained: ${capture.getJSONObject("policy").getBoolean("motionConstraintUsed")}. Physical synchronization is not calibrated by this app.")
     }
     return text.toString()
 }

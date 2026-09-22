@@ -1,5 +1,7 @@
 package dev.latent.camera
 
+import android.graphics.Bitmap
+import androidx.test.platform.app.InstrumentationRegistry
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
@@ -20,5 +22,14 @@ class ReplayUiTest {
                 compose.onAllNodesWithTag("processing_error").fetchSemanticsNodes().isNotEmpty()
         }
         compose.onNodeWithTag("result_image").assertIsDisplayed()
+        // Capture before ActivityScenario teardown; a later shell screenshot is
+        // only the launcher and cannot establish what the result UI displayed.
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        val screenshot = checkNotNull(instrumentation.uiAutomation.takeScreenshot())
+        try {
+            instrumentation.targetContext.openFileOutput("replay-result.png", 0).use {
+                check(screenshot.compress(Bitmap.CompressFormat.PNG, 100, it))
+            }
+        } finally { screenshot.recycle() }
     }
 }
