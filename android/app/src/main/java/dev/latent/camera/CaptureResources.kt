@@ -63,22 +63,28 @@ internal class CaptureTicket<T : AutoCloseable> {
 
     fun await(timeoutMillis: Long): T {
         require(timeoutMillis > 0)
-        lock.withLock {
-            check(!taken) { "Capture lease was already transferred" }
-            var remaining = TimeUnit.MILLISECONDS.toNanos(timeoutMillis)
-            while (value == null && failure == null) {
-                if (remaining <= 0) { failure = TimeoutException("RAW capture timed out"); break }
-                try { remaining = changed.awaitNanos(remaining) }
-                catch (interrupted: InterruptedException) {
-                    Thread.currentThread().interrupt()
-                    failure = CancellationException("Capture wait interrupted").apply { initCause(interrupted) }
+        try {
+            return lock.withLock {
+                check(!taken) { "Capture lease was already transferred" }
+                var remaining = TimeUnit.MILLISECONDS.toNanos(timeoutMillis)
+                while (value == null && failure == null) {
+                    if (remaining <= 0) { failure = TimeoutException("RAW capture timed out"); break }
+                    remaining = changed.awaitNanos(remaining)
                 }
+                failure?.let { throw it }
+                val result = checkNotNull(value)
+                value = null
+                taken = true
+                result
             }
-            failure?.let { throw it }
-            val result = checkNotNull(value)
-            value = null
-            taken = true
-            return result
+        } catch (interrupted: InterruptedException) {
+            Thread.currentThread().interrupt()
+            val cause = CancellationException("Capture wait interrupted").apply { initCause(interrupted) }
+            // awaitNanos can throw after a producer has signalled and offered a
+            // lease. Use the same terminal transition as cancellation so that
+            // an untransferred value is detached, then closed outside the lock.
+            try { fail(cause) } catch (cleanup: Throwable) { cause.addSuppressed(cleanup) }
+            throw cause
         }
     }
 }

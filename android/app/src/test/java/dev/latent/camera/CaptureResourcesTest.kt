@@ -6,6 +6,7 @@ import java.util.concurrent.CancellationException
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
+import java.util.concurrent.atomic.AtomicReference
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.concurrent.thread
 
@@ -63,6 +64,31 @@ class CaptureResourcesTest {
             assertTrue(done.await(3, TimeUnit.SECONDS))
             a.join(); b.join()
             assertThrows(CancellationException::class.java) { ticket.await(100) }
+            assertEquals(1, image.closes.get())
+        }
+    }
+
+    @Test fun interruptedWaitAndConcurrentOfferReleaseUntransferredLease() {
+        repeat(256) {
+            val ticket = CaptureTicket<Resource>()
+            val image = Resource()
+            val failure = AtomicReference<Throwable?>()
+            val waiter = thread {
+                try { ticket.await(3_000).close() }
+                catch (_: CancellationException) {
+                    if (!Thread.currentThread().isInterrupted) failure.set(AssertionError("Interrupt status was lost"))
+                }
+                catch (error: Throwable) { failure.set(error) }
+            }
+            val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3)
+            while (waiter.state != Thread.State.TIMED_WAITING && System.nanoTime() < deadline) Thread.yield()
+            assertEquals(Thread.State.TIMED_WAITING, waiter.state)
+            waiter.interrupt()
+            ticket.offer(image)
+            waiter.join(3_000)
+            assertFalse(waiter.isAlive)
+            assertNull(failure.get())
+            // No second cancellation is needed to clean up a failed await.
             assertEquals(1, image.closes.get())
         }
     }

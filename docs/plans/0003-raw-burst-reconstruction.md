@@ -34,36 +34,43 @@ explicitly. Dynamic Camera2 color is labelled an estimate, not DNG calibration.
 
 ## Verification ledger
 
-The reviewed implementation is `a6eec7a099abd97484fe50f1a4906e5a967482d7`.
-Its exact-head runs and downloaded artifacts were independently checked on 2026-09-22:
+The baseline independently recovered on 2026-09-22 was
+`a6eec7a099abd97484fe50f1a4906e5a967482d7`, not the older handoff SHA.
+All following baseline artifacts were downloaded and their SHA-256 digests checked.
 
-| Gate | Evidence on reviewed implementation | Result |
+| Gate | Exact baseline evidence | Result |
 | --- | --- | --- |
-| Native strict/Vulkan/SPIR-V | Actions 35702743631, linux job 106664367066; artifact 10683690188; all steps successful, 9/9 CTest | VERIFIED |
+| Native strict/Vulkan/SPIR-V | Actions 35702743631, linux job 106664367066, artifact 10683690188; 9/9 CTest | VERIFIED |
 | No-Vulkan and libultrahdr 2.0.2 | Same linux job and archived LastTest logs; 7/7 each | VERIFIED |
-| Clang ASan/UBSan | Same run, job 106664366830; artifact 10683185971; 7/7 | VERIFIED |
-| Android assemble/lint/JVM | Actions 35702743702, job 106664369149; artifact 10683680886; both ABIs, 8 JVM tests, no lint issues | VERIFIED |
-| Installed APK/JNI/Compose/MediaStore | Same Android artifact; 8 instrumentation tests plus a separate in-test screenshot run, no failures/errors/skips | VERIFIED |
-| Independent local reproduction | Artifact checksums and Git bundle checked; GCC strict + explicit SwiftShader ICD, 9/9 CTest | VERIFIED |
+| Clang ASan/UBSan | Same run, job 106664366830, artifact 10683185971; 7/7 | VERIFIED |
+| Android assemble/lint/JVM | Actions 35702743702, job 106664369149, artifact 10683680886; both ABIs, 8 JVM tests, no lint issues | VERIFIED |
+| Installed APK/JNI/Compose/MediaStore | Same Android artifact; 8 instrumentation tests, no failures/errors/skips; result screenshot visually checked | VERIFIED |
+| Independent local reproduction | Verified Git bundle and source/dependency archives; GCC strict + explicit SwiftShader ICD, 9/9 CTest | VERIFIED |
 
-The implementation audit corrections passed all gates above. This ledger refresh
-changes documentation only; its own exact-head workflow outcomes are recorded in
-the final PR review record, without recursively committing a future SHA into itself.
-The final review record in PR #17 binds the reviewed SHA, run/job IDs, artifact
-checksums, and outcomes. A green run from the recovered head is not a pass for a
-later revision. All required workflows check out the PR head rather than its merge ref.
+The subsequent semantic/lifetime review found an interrupt/offer race in
+`CaptureTicket.await`: an interrupted waiter could mark failure while retaining an
+untransferred RAW lease. The canonical failure transition now detaches and releases
+that lease outside the lock. An independent 1,000-iteration exact-source JVM probe
+observed 332 leaks before the correction and zero after it. The repository regression
+races 256 interrupted waits against delivery and requires exactly one release without
+subsequent cancellation. The light theme also restores legible system-bar foregrounds
+on the full-screen result dialog.
 
-Reviewed-implementation quantitative evidence: 478,381 CPU/Vulkan values had observed max
-error 0 (not a universal bit-exactness claim); 320 lifetime dispatches passed.
-Eight-frame static MSE ratio was 0.133149, conditional variance ratio 0.967070,
-and mean effective support 7.85266. Band-limited displacement error was 0.25 px;
-the restored nonlinear-texture case has 0.5 px error per axis under its original
-0.6 px bound. These expose first-generation limits, not general registration quality.
+The final PR review record binds the reviewed SHA, run/job IDs, artifact digests,
+and outcomes **after these corrections**. A previous green baseline is not a pass
+for a later revision. All required workflows check out the PR head, not its merge ref.
 
-The archived 257x193x4, three-repeat host benchmark measured reference median
-1378.90 ms and Vulkan-path median 1372.11 ms, admission bound 7,968,416 bytes,
-and one concurrent source frame. This is software-runner regression evidence,
-not mobile performance or a measured peak allocation/traffic count.
+Baseline quantitative evidence: 478,381 CPU/Vulkan values had observed max error 0
+(not cross-driver bit-exactness); 320 lifetime dispatches passed. Eight-frame static
+MSE ratio was 0.133149, conditional variance ratio 0.967070, mean effective support
+7.85266. Band-limited displacement error was 0.25 px; nonlinear-texture displacement
+error was 0.5 px per axis under its original 0.6 px bound. These expose first-generation
+limits, not general registration quality.
+
+The 257x193x4, three-repeat host benchmark measured reference median 1378.90 ms and
+Vulkan-path median 1372.11 ms, admission bound 7,968,416 bytes, one concurrent source
+frame. This is software-runner regression evidence, not mobile performance or a
+measured peak allocation/traffic count.
 
 ## Device-only and next-generation boundaries
 
