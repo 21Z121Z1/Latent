@@ -12,11 +12,11 @@ namespace {
 using namespace reference;
 struct Push {
     std::array<std::uint32_t,4> counts{},tile{},geometry{};
-    std::array<float,4> policy{},policy2{};
+    std::array<float,4> policy{},policy2{},policy3{};
 };
-static_assert(sizeof(Push)==80);
+static_assert(sizeof(Push)==96);
 struct State {ReconstructionAnchor anchor;ReconstructionAccumulator accum;};
-static_assert(sizeof(State)==160);
+static_assert(sizeof(State)==sizeof(ReconstructionAnchor)+sizeof(ReconstructionAccumulator));
 class Executor final : public DirectTileExecutor {
 public:
     Executor(std::unique_ptr<ComputeRunner> runner,std::size_t sources,std::size_t outputs,
@@ -58,7 +58,8 @@ public:
     }
     void finish(std::span<ReconstructedPixel> out) override {
         if(!count_ || out.size()!=count_) throw std::invalid_argument("GPU tile output size mismatch");
-        Push push{};push.counts={static_cast<std::uint32_t>(count_),0,2,0};dispatch(push);
+        Push push{};push.counts={static_cast<std::uint32_t>(count_),0,2,0};
+        push.policy2={policy_.minimumConfidence,0,policy_.quadraticStrength,policy_.fitRegularization};push.policy3={policy_.maximumFitLeverage,0,0,0};dispatch(push);
         if(out.data()!=buffers_[3].mapped) {
             runner_->download(buffers_[3],out.data(),out.size_bytes());transfers_+=out.size_bytes();
         }
@@ -79,8 +80,9 @@ private:
         Push push{{static_cast<std::uint32_t>(w.size()),0,phase,0},
             {g.sourceTile.x,g.sourceTile.y,g.sourceTile.width,g.sourceTile.height},
             {g.radiusX,g.radiusY,g.correlatedSpatialNoise?1U:0U,0},
-            {policy_.detailSigma,policy_.residualCutoff,policy_.aliasAllowance,policy_.varianceFloor},
-            {policy_.minimumConfidence,g.fallbackSigma,0,0}};
+            {policy_.detailSigma,policy_.residualCutoff,policy_.aliasAllowance,policy_.relativeVarianceFloor},
+            {policy_.minimumConfidence,g.fallbackSigma,policy_.quadraticStrength,policy_.fitRegularization},
+            {policy_.maximumFitLeverage,0,0,0}};
         dispatch(push);
     }
     void dispatch(Push& p) {

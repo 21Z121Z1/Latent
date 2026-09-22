@@ -10,7 +10,7 @@
 #include <vector>
 
 namespace latent::runtime {
-inline constexpr const char* kDirectReconstructionVersion = "latent.direct-cfa.1";
+inline constexpr const char* kDirectReconstructionVersion = "latent.direct-cfa.2";
 class RawTileSource {
 public:
     virtual ~RawTileSource() = default;
@@ -74,6 +74,8 @@ struct TiledReconstructionPlan {
     std::vector<std::string> decisions;
 };
 struct DirectReconstructionTrace {
+    ReconstructionGrid grid{};
+    reference::DirectKernelPolicy kernel{};
     imaging::FrameId reference{};
     TiledReconstructionPlan plan{};
     std::vector<ReconstructionMotion> motion;
@@ -81,9 +83,10 @@ struct DirectReconstructionTrace {
     std::uint64_t rawBytesRead = 0, transferBytes = 0, mappedAccessBytes = 0, outputPixels = 0, tiles = 0;
     // Owned arena allocations; allocator/runtime/driver internal allocations are
     // not claimed to be included. resident measurement belongs to benchmarks.
-    std::uint64_t arenaAllocations = 0, invalidChannels = 0, referenceFallbackChannels = 0;
+    std::uint64_t arenaAllocations = 0, invalidChannels = 0, referenceFallbackChannels = 0, jointFitChannels = 0;
     double guideMilliseconds = 0, alignmentMilliseconds = 0, reconstructionMilliseconds = 0;
     double totalMilliseconds = 0, gpuMilliseconds = -1;
+    double meanSamplingDiversity = 0, meanModelBlend = 0;
     double meanEffectiveFrames = 0, meanConfidence = 0, meanVariance = 0;
 };
 [[nodiscard]] TiledReconstructionPlan planTiledReconstruction(const imaging::RawBurst&,const ReconstructionGrid&,

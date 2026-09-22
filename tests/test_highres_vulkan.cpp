@@ -15,7 +15,7 @@ int main() {
             std::cout<<"Vulkan highres test skipped: "<<detail<<'\n';return 0;
         }
         available.reset();
-        double maxRgb=0,maxVar=0,maxEff=0,maxConfidence=0,gpuMs=0;
+        double maxRgb=0,maxVar=0,maxEff=0,maxConfidence=0,maxPhase=0,maxBlend=0,gpuMs=0;
         std::uint64_t compared=0;
         for(unsigned scenario=0;scenario<3;++scenario)
         for(std::uint32_t group=1;group<=4;++group)for(std::uint32_t phase=0;phase<4;++phase) {
@@ -44,14 +44,20 @@ int main() {
                 const double var=diff(a.pixels[i].variance[c],b.pixels[i].variance[c]);
                 const double eff=diff(a.pixels[i].effectiveFrames[c],b.pixels[i].effectiveFrames[c]);
                 const double confidence=diff(a.pixels[i].confidence[c],b.pixels[i].confidence[c]);
+                const double diversity=diff(a.pixels[i].samplingDiversity[c],b.pixels[i].samplingDiversity[c]);
+                const double blend=diff(a.pixels[i].modelBlend[c],b.pixels[i].modelBlend[c]);
+                maxPhase=std::max(maxPhase,diversity);maxBlend=std::max(maxBlend,blend);
                 maxRgb=std::max(maxRgb,rgb);maxVar=std::max(maxVar,var);maxEff=std::max(maxEff,eff);maxConfidence=std::max(maxConfidence,confidence);
-                if(rgb>3e-5 || var>1e-7+1e-3*a.pixels[i].variance[c] || eff>2e-3 || confidence>5e-4)
-                    throw std::runtime_error("CPU/GPU mismatch group="+std::to_string(group)+" rgb="+std::to_string(rgb)+
+                if(rgb>3e-5 || var>1e-7+1e-3*a.pixels[i].variance[c] || eff>2e-3 || confidence>5e-4 || diversity>3e-5 || blend>1e-4)
+                    throw std::runtime_error("CPU/GPU mismatch scenario="+std::to_string(scenario)+" group="+std::to_string(group)+" phase="+std::to_string(phase)+
+                        " pixel="+std::to_string(i)+" channel="+std::to_string(c)+" cpu_eff="+std::to_string(a.pixels[i].effectiveFrames[c])+" gpu_eff="+std::to_string(b.pixels[i].effectiveFrames[c])+
+                        " cpu_blend="+std::to_string(a.pixels[i].modelBlend[c])+" gpu_blend="+std::to_string(b.pixels[i].modelBlend[c])+
+                        " cpu_phase="+std::to_string(a.pixels[i].samplingDiversity[c])+" gpu_phase="+std::to_string(b.pixels[i].samplingDiversity[c])+" rgb="+std::to_string(rgb)+
                         " variance="+std::to_string(var)+" effective="+std::to_string(eff)+" confidence="+std::to_string(confidence));
                 ++compared;
             }
         }
         std::cout<<"direct CPU/GPU channels="<<compared<<" max_rgb_error="<<maxRgb<<" max_variance_error="<<maxVar
-            <<" max_effective_error="<<maxEff<<" max_confidence_error="<<maxConfidence<<" gpu_ms="<<gpuMs<<" PASS\n";
+            <<" max_effective_error="<<maxEff<<" max_confidence_error="<<maxConfidence<<" max_phase_error="<<maxPhase<<" max_model_error="<<maxBlend<<" gpu_ms="<<gpuMs<<" PASS\n";
     }catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}
 }

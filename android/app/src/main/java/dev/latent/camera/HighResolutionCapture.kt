@@ -70,7 +70,7 @@ internal class HighResolutionCapture(private val context: Context) {
         check(!directory.exists() && directory.mkdirs()) { "Use a new capture bundle directory" }
         val manager = context.getSystemService(CameraManager::class.java)
         val c = manager.getCameraCharacteristics(o.cameraId)
-        val manifest = JSONObject().put("schema", 1).put("algorithm", "latent.direct-cfa.1")
+        val manifest = JSONObject().put("schema", 1)
             .put("deviceVerified", false).put("buildFingerprint", Build.FINGERPRINT)
             .put("probe", SensorMode.probe(o.cameraId, c)).put("frames", JSONArray())
         val manifestFile = File(directory, "capture.json")
@@ -224,7 +224,9 @@ internal class HighResolutionCapture(private val context: Context) {
             manifest.put("thermalStatus", thermal).put("powerSaveMode", power.isPowerSaveMode)
             val report = NativeBridge.reconstructRawFiles(raws.toTypedArray(), modes.toTypedArray(), paths.toTypedArray(),
                 File(directory, "reconstruction.lrgb").absolutePath, o.preferVulkan, o.reconstructionBudgetBytes, severity)
-            manifest.put("reconstruction", JSONObject(report)).put("status", "software-pipeline-completed-device-quality-review-required")
+            val reconstruction = JSONObject(report)
+            manifest.put("algorithm", reconstruction.getJSONObject("trace").getString("algorithm"))
+            manifest.put("reconstruction", reconstruction).put("status", "software-pipeline-completed-device-quality-review-required")
             return manifest
         } catch (e: Exception) { manifest.put("status", "failed-closed").put("error", e.toString()); throw e }
         finally {

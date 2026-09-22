@@ -8,6 +8,8 @@ on:
       - '**.comp'
       - '**CMakeLists.txt'
       - 'cmake/**'
+      - 'docs/joint-raw-reconstruction.md'
+      - 'docs/plans/0005-jsr-informed-joint-raw.md'
       - '.github/workflows/highres.yml'
   workflow_dispatch:
 
@@ -42,6 +44,17 @@ jobs:
           ! grep -E 'Validation Error|VUID-|SYNC-HAZARD' build/highres-ctest.log
           if test -x build/latent_highres_benchmark; then
             build/latent_highres_benchmark --suite > build/highres-benchmark.jsonl
+            # Same source/grid/frame membership: estimate cost and actual fit
+            # usage separately from the independent irradiance quality tests.
+            for group in 1 2 3 4; do
+              for backend in '' '--gpu'; do
+                for ablation in '' '--gaussian'; do
+                  build/latent_highres_benchmark --chart --width 96 --height 80 --frames 8 \
+                    --scale 2 --tile 64 --group "$group" $backend $ablation \
+                    >> build/highres-joint-benchmark.jsonl
+                done
+              done
+            done
           fi
       - name: Package offline execution dependencies
         if: always()
