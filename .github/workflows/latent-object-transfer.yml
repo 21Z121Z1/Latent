@@ -1,0 +1,56 @@
+name: verified offline object transfer
+on:
+  push:
+    branches: [automation/latent-object-transfer-20260922]
+permissions:
+  contents: read
+jobs:
+  upload-blobs:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify exact offline tree and upload only blob objects
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python - <<'PY'
+          import base64, json, os, pathlib, subprocess, urllib.request, zlib
+          def git(*args, data=None):
+              return subprocess.check_output(['git', *args], input=data)
+          spec = json.loads(pathlib.Path('.latent-transfer.json').read_text())
+          git('checkout','--detach',spec['base'])
+          git('apply','--index','--binary','-',data=zlib.decompress(base64.b64decode(spec['patch_zlib_base64'])))
+          git('diff','--cached','--check')
+          assert git('write-tree').decode().strip() == spec['tree'], 'Offline tree mismatch'
+          entries = []
+          for name in git('diff','--cached','--name-only','-z').decode().split('\0'):
+              if not name: continue
+              staged = git('ls-files','--stage','--',name).decode().strip()
+              if not staged:
+                  entries.append({'path':name,'mode':'100644','type':'blob','sha':None}); continue
+              mode, expected, _ = staged.split(None,2)
+              data = git('show',':' + name)
+              request = urllib.request.Request('https://api.github.com/repos/21Z121Z1/Latent/git/blobs',
+                  data=json.dumps({'content':base64.b64encode(data).decode(),'encoding':'base64'}).encode(),
+                  method='POST', headers={'Authorization':'Bearer '+os.environ['GH_TOKEN'],
+                  'Accept':'application/vnd.github+json','Content-Type':'application/json'})
+              with urllib.request.urlopen(request,timeout=60) as response: result=json.load(response)
+              assert result['sha'] == expected, name
+              entries.append({'path':name,'mode':mode,'type':'blob','sha':expected})
+          proof={'base':spec['base'],'tree':spec['tree'],'entries':entries}
+          print(json.dumps(proof,indent=2))
+          pathlib.Path(os.environ['RUNNER_TEMP'],'object-proof.json').write_text(json.dumps(proof,indent=2)+'\n')
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: verified-object-proof-${{ github.sha }}
+          path: ${{ runner.temp }}/object-proof.json
+          if-no-files-found: error
+          retention-days: 7
