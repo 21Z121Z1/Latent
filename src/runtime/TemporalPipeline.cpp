@@ -3,9 +3,28 @@
 #include "latent/vulkan/TemporalFusion.h"
 #endif
 #include <chrono>
+#include <limits>
 #include <stdexcept>
 
 namespace latent::runtime {
+std::uint64_t temporalWorkingSetBound(imaging::Extent extent, std::size_t members,
+    const reference::TemporalPolicy& policy, TemporalBackend backend) {
+    reference::validateTemporalPolicy(policy);
+    if (extent.width < 2U || extent.height < 2U || members == 0U)
+        throw std::invalid_argument("invalid temporal admission extent or membership");
+    if (backend != TemporalBackend::Reference && backend != TemporalBackend::Vulkan)
+        throw std::invalid_argument("invalid temporal admission backend");
+    const auto n = extent.pixelCount();
+    const auto tiles = ((static_cast<std::uint64_t>(extent.width) + policy.tileSize - 1U) / policy.tileSize) *
+        ((static_cast<std::uint64_t>(extent.height) + policy.tileSize - 1U) / policy.tileSize);
+    const std::uint64_t bytesPerPixel = backend == TemporalBackend::Vulkan ? 160U : 112U;
+    const auto maximum = std::numeric_limits<std::uint64_t>::max();
+    if (n > maximum / bytesPerPixel || tiles > maximum / 128U / members)
+        throw std::invalid_argument("temporal working-set arithmetic overflow");
+    const auto imageBytes = n * bytesPerPixel, traceBytes = tiles * 128U * members;
+    if (traceBytes > maximum - imageBytes) throw std::invalid_argument("temporal working-set arithmetic overflow");
+    return imageBytes + traceBytes;
+}
 TemporalExecutionPlan compileTemporalPlan(const imaging::RawBurst& burst, const TemporalRequest& request,
     const reference::TemporalPolicy& policy, const TemporalExecutionPolicy& execution,
     const TemporalCapabilities& capabilities) {
@@ -17,22 +36,11 @@ TemporalExecutionPlan compileTemporalPlan(const imaging::RawBurst& burst, const 
     }
     TemporalExecutionPlan plan{};
     plan.burst_ = burst; plan.request_ = request; plan.policy_ = policy;
-    // Conservative payload bound includes source/ref FP32, accumulators,
-    // pyramids, result/scene, and O(N*tiles) trace/lineage. Borrowed RAW storage
-    // and driver allocator overhead are excluded and must be budgeted by capture.
-    const auto n = burst.extent.pixelCount();
-    const auto tiles = ((static_cast<std::uint64_t>(burst.extent.width) + policy.tileSize - 1U) / policy.tileSize) *
-        ((static_cast<std::uint64_t>(burst.extent.height) + policy.tileSize - 1U) / policy.tileSize);
     const bool vk = execution.preferVulkan && capabilities.vulkanFusion;
-    const std::uint64_t bytesPerPixel = vk ? 160U : 112U;
-    if (n > execution.memoryBudgetBytes / bytesPerPixel ||
-        tiles > execution.memoryBudgetBytes / 128U / burst.members.size()) {
-        throw std::invalid_argument("temporal working set exceeds execution memory budget");
-    }
-    plan.workingSetBound_ = n * bytesPerPixel + tiles * 128U * burst.members.size();
-    if (plan.workingSetBound_ > execution.memoryBudgetBytes) {
+    plan.workingSetBound_ = temporalWorkingSetBound(burst.extent, burst.members.size(), policy,
+        vk ? TemporalBackend::Vulkan : TemporalBackend::Reference);
+    if (plan.workingSetBound_ > execution.memoryBudgetBytes)
         throw std::invalid_argument("temporal working set and trace exceed execution memory budget");
-    }
     for (const auto& schema : graph::temporalSchemas) {
         plan.stages_.push_back({schema.operation,
             vk && schema.operation == graph::TemporalOperation::FuseRaw ? TemporalBackend::Vulkan : TemporalBackend::Reference});
@@ -41,17 +49,24 @@ TemporalExecutionPlan compileTemporalPlan(const imaging::RawBurst& burst, const 
     return plan;
 }
 
-TemporalResult executeTemporalPlan(const TemporalExecutionPlan& plan, const HostRawBindings& bindings) {
+TemporalResult executeTemporalPlan(const TemporalExecutionPlan& plan, const HostRawBindings& bindings, const TemporalExecutionControl& control) {
     const auto started = std::chrono::steady_clock::now();
     const auto& burst = plan.burst(); const auto& policy = plan.policy();
     const auto valid = bindings.validate(burst);
     if (!valid.valid) throw std::invalid_argument(valid.message);
+    std::size_t completed = 0;
+    const auto checkpoint = [&](graph::TemporalOperation stage) {
+        if (control.continueExecution && !control.continueExecution({stage, completed, burst.members.size()}))
+            throw TemporalCancelled{};
+    };
+    checkpoint(graph::TemporalOperation::SelectReference);
     TemporalResult result{};
     auto& trace = result.trace;
     trace.burst = burst.id; trace.fusionBackend = plan.fusionBackend(); trace.fallback = plan.fallback();
     trace.workingSetBoundBytes = plan.workingSetBound();
     trace.selection = reference::selectBurstReference(burst, bindings, policy, plan.request().reference);
     const auto refView = bindings.view(burst, trace.selection.frame);
+    checkpoint(graph::TemporalOperation::NormalizeFrame);
     const auto ref = reference::normalizeTemporalRaw(refView, *refView.metadata, policy,
                                                     plan.request().reconstruction.applyLensShading);
     std::unique_ptr<reference::TemporalFusionSession> session;
@@ -71,14 +86,19 @@ TemporalResult executeTemporalPlan(const TemporalExecutionPlan& plan, const Host
     // source is released at the end of each iteration; no N-frame FP32 cache.
     for (const auto& member : burst.members) {
         const bool isReference = member.id == trace.selection.frame;
+        checkpoint(graph::TemporalOperation::NormalizeFrame);
         auto source = isReference ? reference::NormalizedRaw{} : reference::normalizeTemporalRaw(
             bindings.view(burst, member.id), *refView.metadata, policy, plan.request().reconstruction.applyLensShading);
         const auto& input = isReference ? ref : source;
+        checkpoint(graph::TemporalOperation::AlignFrame);
         auto field = reference::alignTemporalRaw(ref, input, trace.selection.frame, member.id, policy);
+        checkpoint(graph::TemporalOperation::FuseRaw);
         lineage->contributions.push_back(session->add(input, field, isReference));
         trace.frames.push_back({member.id, input.radiometricScale, input.radiometricConfidence,
             input.gainEstimated, input.noiseEstimated, std::move(field)});
+        ++completed;
     }
+    checkpoint(graph::TemporalOperation::ReconstructScene);
     const auto accumulation = session->finish();
     session.reset(); // Release device resources before allocating scene/render intermediates.
     result.fused = reference::finishTemporalFusion(ref, accumulation, lineage);
@@ -93,11 +113,11 @@ TemporalResult executeTemporalPlan(const TemporalExecutionPlan& plan, const Host
 }
 TemporalResult reconstructRawBurst(const imaging::RawBurst& burst, const HostRawBindings& bindings,
     const TemporalRequest& request, const reference::TemporalPolicy& policy,
-    const TemporalExecutionPolicy& execution) {
+    const TemporalExecutionPolicy& execution, const TemporalExecutionControl& control) {
     TemporalCapabilities capabilities{};
 #ifdef LATENT_ENABLE_VULKAN_RUNTIME
     if (execution.preferVulkan) capabilities.vulkanFusion = vulkan::temporalFusionAvailable(burst.extent);
 #endif
-    return executeTemporalPlan(compileTemporalPlan(burst, request, policy, execution, capabilities), bindings);
+    return executeTemporalPlan(compileTemporalPlan(burst, request, policy, execution, capabilities), bindings, control);
 }
 }  // namespace latent::runtime

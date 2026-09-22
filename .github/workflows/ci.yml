@@ -50,6 +50,10 @@ jobs:
             echo 'Vulkan execution is mandatory in this job' >&2
             exit 1
           fi
+      - name: Record host and software Vulkan benchmark
+        run: |
+          ./build/latent_temporal_benchmark | tee build/temporal-benchmark.txt
+          vulkaninfo --summary > build/vulkan-summary.txt
 
       - name: Configure (no Vulkan runtime)
         run: cmake -S . -B build-novk -DLATENT_BUILD_TESTS=ON -DLATENT_ENABLE_VULKAN_RUNTIME=OFF
@@ -104,6 +108,8 @@ jobs:
             ${{ runner.temp }}/latent-reproduction/
             build/Testing/Temporary/LastTest.log
             build/ctest.log
+            build/temporal-benchmark.txt
+            build/vulkan-summary.txt
             build-novk/Testing/Temporary/LastTest.log
             build-uhdr/Testing/Temporary/LastTest.log
 

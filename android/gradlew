@@ -1,0 +1,23 @@
+#!/bin/sh
+# Pinned, checksum-verified Gradle bootstrap. No globally installed Gradle is used.
+set -eu
+version=9.6.0
+checksum=bbaeb2fef8710818cf0e261201dab964c572f92b942812df0c3620d62a529a01
+cache="${GRADLE_USER_HOME:-$HOME/.gradle}/latent-distributions"
+install="$cache/gradle-$version"
+if [ ! -x "$install/bin/gradle" ]; then
+    mkdir -p "$cache"
+    temp=$(mktemp -d "$cache/bootstrap.XXXXXXXX")
+    trap 'rm -rf "$temp"' EXIT HUP INT TERM
+    curl --fail --location --proto '=https' --tlsv1.2 --retry 3 \
+        "https://services.gradle.org/distributions/gradle-$version-bin.zip" -o "$temp/gradle.zip"
+    if command -v sha256sum >/dev/null 2>&1; then
+        actual=$(sha256sum "$temp/gradle.zip" | cut -d ' ' -f 1)
+    else
+        actual=$(shasum -a 256 "$temp/gradle.zip" | cut -d ' ' -f 1)
+    fi
+    [ "$actual" = "$checksum" ] || { echo 'Gradle distribution checksum mismatch' >&2; exit 1; }
+    unzip -q "$temp/gradle.zip" -d "$temp"
+    if [ ! -d "$install" ]; then mv "$temp/gradle-$version" "$install"; fi
+fi
+exec "$install/bin/gradle" "$@"

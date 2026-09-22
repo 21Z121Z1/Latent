@@ -1,6 +1,8 @@
 # Temporal operations extend the existing semantic/reference core and backend.
 target_sources(latent_core PRIVATE
     src/runtime/TemporalPipeline.cpp
+    src/runtime/CapturePlan.cpp
+    src/runtime/CfaTransport.cpp
     src/reference/TemporalReconstruct.cpp
     src/reference/TemporalAlignment.cpp)
 
@@ -35,7 +37,22 @@ function(latent_temporal_test name source)
     add_test(NAME ${name} COMMAND ${name})
 endfunction()
 if(LATENT_BUILD_TESTS)
+    add_executable(latent_temporal_benchmark tools/benchmark_temporal.cpp)
+    target_link_libraries(latent_temporal_benchmark PRIVATE latent::core)
+    if(MSVC)
+        target_compile_options(latent_temporal_benchmark PRIVATE /W4)
+        if(LATENT_STRICT_WARNINGS)
+            target_compile_options(latent_temporal_benchmark PRIVATE /WX)
+        endif()
+    else()
+        target_compile_options(latent_temporal_benchmark PRIVATE -Wall -Wextra -Wpedantic -Wconversion -Wshadow -ffp-contract=off)
+        if(LATENT_STRICT_WARNINGS)
+            target_compile_options(latent_temporal_benchmark PRIVATE -Werror)
+        endif()
+    endif()
     latent_temporal_test(latent_temporal_tests tests/test_temporal.cpp)
+    latent_temporal_test(latent_capture_plan_tests tests/test_capture_plan.cpp)
+    latent_temporal_test(latent_cfa_transport_tests tests/test_cfa_transport.cpp)
     if(LATENT_ENABLE_VULKAN_RUNTIME)
         latent_temporal_test(latent_temporal_vulkan_tests tests/test_temporal_vulkan.cpp)
     endif()

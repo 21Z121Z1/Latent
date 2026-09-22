@@ -76,16 +76,74 @@ void radiometry() {
     near(mean / static_cast<float>(one.samples.size()), 0, 1e-4F, "no radiometric mean drift");
 }
 void translation() {
-    for (const auto& [dx,dy] : {std::pair{2.0F, -4.0F}, std::pair{0.75F, -1.25F}, std::pair{20.0F, 12.0F}}) {
+    for (const auto& [dx,dy] : {std::pair{2.0F, -4.0F}, std::pair{20.0F, 12.0F}}) {
         auto r = test::frame(1, {161,129}, imaging::CfaPattern::RGGB,0,0,0.001F);
         auto s = test::frame(2, {161,129}, imaging::CfaPattern::RGGB,dx,dy,0.001F);
         const auto rn = reference::normalizeTemporalRaw(runtime::viewRawFrame(r), r, {}, false);
         const auto sn = reference::normalizeTemporalRaw(runtime::viewRawFrame(s), r, {}, false);
         const auto a = reference::alignTemporalRaw(rn,sn,imaging::FrameId{1},imaging::FrameId{2},{});
         std::cout << "alignment expected=" << dx << ',' << dy << " actual=" << a.global.dx << ',' << a.global.dy << " confidence=" << a.global.confidence << '\n';
-        near(a.global.dx,dx,0.6F,"horizontal displacement gate");
-        near(a.global.dy,dy,0.6F,"vertical displacement gate");
+        near(a.global.dx,dx,0.1F,"integer/large horizontal displacement gate");
+        near(a.global.dy,dy,0.1F,"integer/large vertical displacement gate");
     }
+    {
+        auto r = test::frame(1, {161,129}, imaging::CfaPattern::RGGB,0,0,0.001F);
+        auto s = test::frame(2, {161,129}, imaging::CfaPattern::RGGB,0.75F,-1.25F,0.001F);
+        const auto rn = reference::normalizeTemporalRaw(runtime::viewRawFrame(r), r, {}, false);
+        const auto sn = reference::normalizeTemporalRaw(runtime::viewRawFrame(s), r, {}, false);
+        const auto a = reference::alignTemporalRaw(rn,sn,imaging::FrameId{1},imaging::FrameId{2},{});
+        std::cout << "nonlinear texture subpixel=" << a.global.dx << ',' << a.global.dy << '\n';
+        near(a.global.dx,0.75F,0.6F,"nonlinear-texture horizontal displacement");
+        near(a.global.dy,-1.25F,0.6F,"nonlinear-texture vertical displacement");
+    }
+    const auto bandLimited = [](float x, float y, std::size_t) {
+        return 0.35F + 0.08F * std::sin(0.035F*x + 0.021F*y) +
+            0.05F * std::cos(0.027F*x - 0.031F*y) + 0.04F * std::sin(0.009F*x + 0.015F*y);
+    };
+    auto r = test::frame(1, {161,129}, imaging::CfaPattern::RGGB,0,0,0.002F,1,bandLimited);
+    auto s = test::frame(2, {161,129}, imaging::CfaPattern::RGGB,0.75F,-1.25F,0.002F,1,bandLimited);
+    const auto rn = reference::normalizeTemporalRaw(runtime::viewRawFrame(r), r, {}, false);
+    const auto sn = reference::normalizeTemporalRaw(runtime::viewRawFrame(s), r, {}, false);
+    const auto subpixel = reference::alignTemporalRaw(rn,sn,imaging::FrameId{1},imaging::FrameId{2},{});
+    std::cout << "subpixel expected=0.75,-1.25 actual=" << subpixel.global.dx << ',' << subpixel.global.dy
+              << " confidence=" << subpixel.global.confidence << '\n';
+    near(subpixel.global.dx,0.75F,0.30F,"subpixel horizontal displacement gate");
+    near(subpixel.global.dy,-1.25F,0.30F,"subpixel vertical displacement gate");
+    require(subpixel.global.confidence > 0.5F,"supported subpixel fixture must remain alignment-usable");
+}
+void staticNoiseReduction() {
+    constexpr std::size_t frameCount = 8U;
+    constexpr float sigma = 0.02F;
+    const imaging::Extent extent{97,81};
+    std::vector<imaging::RawFrame> frames;
+    for (std::uint64_t id = 1; id <= frameCount; ++id)
+        frames.push_back(test::frame(id,extent,imaging::CfaPattern::RGGB,0,0,sigma));
+    const auto out = test::run(frames);
+    const auto cleanFrame = test::frame(99,extent,imaging::CfaPattern::RGGB,0,0,0);
+    const auto truth = reference::normalizeRaw(cleanFrame);
+    const auto one = reference::normalizeRaw(frames.front());
+    double oneSquared = 0, fusedSquared = 0, meanError = 0, meanVariance = 0, meanSupport = 0;
+    std::size_t count = 0;
+    for (std::uint32_t y=8; y+8<extent.height; ++y) for (std::uint32_t x=8; x+8<extent.width; ++x) {
+        const auto i = static_cast<std::size_t>(y)*extent.width+x;
+        const double a = static_cast<double>(one.samples[i]-truth.samples[i]);
+        const double b = static_cast<double>(out.fused.sensor.samples[i]-truth.samples[i]);
+        oneSquared += a*a; fusedSquared += b*b; meanError += b;
+        meanVariance += out.fused.uncertainty.marginalVariance[i];
+        meanSupport += out.fused.uncertainty.effectiveSampleCount[i];
+        require(std::isfinite(out.fused.uncertainty.marginalVariance[i]) && out.fused.uncertainty.marginalVariance[i] >= 0,
+                "full-pipeline uncertainty must be finite/non-negative");
+        ++count;
+    }
+    const double mseRatio = fusedSquared / oneSquared;
+    const double expectedVariance = static_cast<double>(sigma*sigma) / static_cast<double>(frameCount);
+    const double varianceRatio = (meanVariance/static_cast<double>(count)) / expectedVariance;
+    std::cout << "static 8-frame mse_ratio=" << mseRatio << " variance_ratio=" << varianceRatio
+              << " effective_n=" << meanSupport/static_cast<double>(count) << '\n';
+    require(mseRatio < 0.20,"static full-pipeline noise reduction must approach 1/N without bias amplification");
+    require(std::abs(meanError/static_cast<double>(count)) < 0.001,"static fusion mean must not systematically drift");
+    require(std::abs(varianceRatio-1.0) < 0.15,"full-pipeline conditional variance calibration");
+    require(meanSupport/static_cast<double>(count) > 7.0,"static full-pipeline effective support");
 }
 void monteCarlo() {
     constexpr std::size_t repetitions = 20000, frames = 8;
@@ -150,7 +208,7 @@ void validationAndPlan() {
 }
 int main() {
     try {
-        singleAndLineage(); cfaAndBorders(); radiometry(); translation(); monteCarlo(); motionAndClipping(); validationAndPlan();
+        singleAndLineage(); cfaAndBorders(); radiometry(); translation(); staticNoiseReduction(); monteCarlo(); motionAndClipping(); validationAndPlan();
         std::cout << "temporal reference properties passed\n";
     } catch (const std::exception& e) { std::cerr << "FAIL: " << e.what() << '\n'; return 1; }
 }

@@ -1,6 +1,8 @@
 #pragma once
 #include "latent/graph/TemporalIR.h"
 #include "latent/reference/TemporalReconstruct.h"
+#include <functional>
+#include <stdexcept>
 
 namespace latent::runtime {
 enum class TemporalBackend : std::uint8_t { Reference, Vulkan };
@@ -59,18 +61,35 @@ struct TemporalExecutionTrace {
     std::vector<TemporalFrameTrace> frames;
     double processingMilliseconds = 0;
 };
+struct TemporalProgress {
+    graph::TemporalOperation stage;
+    std::size_t completedFrames = 0, totalFrames = 0;
+};
+class TemporalCancelled final : public std::runtime_error {
+public:
+    TemporalCancelled() : std::runtime_error("temporal execution cancelled") {}
+};
+struct TemporalExecutionControl {
+    // Runs synchronously on the execution thread. False cancels at a stage boundary.
+    std::function<bool(const TemporalProgress&)> continueExecution;
+};
 struct TemporalResult {
     imaging::SceneFrame scene;
     reference::FusedRaw fused;
     TemporalExecutionTrace trace;
 };
+// Physical payload admission estimate shared by capture/runtime adapters. It
+// excludes borrowed RAW, output presentation, and driver allocation overhead.
+[[nodiscard]] std::uint64_t temporalWorkingSetBound(imaging::Extent extent, std::size_t members,
+    const reference::TemporalPolicy& policy, TemporalBackend backend);
 [[nodiscard]] TemporalExecutionPlan compileTemporalPlan(const imaging::RawBurst& burst,
     const TemporalRequest& request, const reference::TemporalPolicy& policy,
     const TemporalExecutionPolicy& execution, const TemporalCapabilities& capabilities);
 [[nodiscard]] TemporalResult executeTemporalPlan(const TemporalExecutionPlan& plan,
-                                                const HostRawBindings& bindings);
+                                                const HostRawBindings& bindings, const TemporalExecutionControl& control = {});
 // Default multi-frame entry point. A capability probe is an execution concern.
 [[nodiscard]] TemporalResult reconstructRawBurst(const imaging::RawBurst& burst,
     const HostRawBindings& bindings, const TemporalRequest& request = {},
-    const reference::TemporalPolicy& policy = {}, const TemporalExecutionPolicy& execution = {});
+    const reference::TemporalPolicy& policy = {}, const TemporalExecutionPolicy& execution = {},
+    const TemporalExecutionControl& control = {});
 }  // namespace latent::runtime

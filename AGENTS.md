@@ -17,7 +17,7 @@ Never use a copied delivery snapshot as architectural truth.
 
 ```text
 capture / fixture
-    -> RawFrame / future RawBurst        sensor-referred
+    -> RawFrame / RawBurst        sensor-referred
     -> SceneFrame                        scene-referred AP1/D60,
                                          linear, unbounded, negative-preserving
     -> RenderedFrame                     explicit SDR/HDR display rendition
@@ -31,7 +31,7 @@ semantic request + observations + delegated policy + capabilities
     -> outputs + evidence / ExecutionTrace
 ```
 
-`GraphCompiler`, first-class `ExecutionPlan`, typed multi-source lineage, authority-separated compiler contexts, `RawBurst`, structured `ExecutionTrace`, and the ADR-0004 derived `SystemCatalog` introspection surface are target architecture, not current APIs.
+`RawBurst`, multi-source lineage, and the temporal execution plan/trace are implemented. The general `GraphCompiler`/`ExecutionPlan`, authority-separated compiler contexts, and ADR-0004 derived `SystemCatalog` remain target architecture; the temporal plan does not substitute for that control plane.
 
 ## Route questions to their authority
 
