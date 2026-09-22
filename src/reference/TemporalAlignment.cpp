@@ -152,7 +152,8 @@ struct Linearization {
     std::uint32_t count = 0;
 };
 Linearization linearize(const Proxy& ref, const Proxy& src, Window window,
-                        float dx, float dy, float floor) {
+                        float dx, float dy, float floor,
+                        std::optional<std::array<float, 2>> commonWith = {}) {
     Linearization out{};
     float loss = 0, possible = 0;
     const auto step = std::max(1U, std::max(window.x1-window.x0, window.y1-window.y0) / 48U);
@@ -164,7 +165,8 @@ Linearization linearize(const Proxy& ref, const Proxy& src, Window window,
             if (r.usable == 0) continue;
             possible += 1.0F;
             const auto s = cubic(src, static_cast<float>(x)+dx, static_cast<float>(y)+dy);
-            if (!s) continue;
+            if (!s || (commonWith && !cubic(src, static_cast<float>(x)+(*commonWith)[0],
+                                              static_cast<float>(y)+(*commonWith)[1]))) continue;
             const float variance = r.variance+s->sample.variance+floor;
             const float delta = r.value-s->sample.value;
             const float z2 = delta*delta/variance;
@@ -205,9 +207,18 @@ MotionTile refineContinuous(const Proxy& ref, const Proxy& src, Window window,
         for (int backtrack = 0; backtrack < 6; ++backtrack) {
             const float dx = std::clamp(motion.dx+ux, -limit, limit);
             const float dy = std::clamp(motion.dy+uy, -limit, limit);
-            const auto candidate = linearize(ref, src, window, dx, dy, floor);
-            if (candidate.cost < state.cost && static_cast<float>(candidate.count) >= 0.95F*static_cast<float>(state.count)) {
-                motion.dx = dx; motion.dy = dy; state = candidate; accepted = true; break;
+            // Compare exactly the intersection of supported cubic footprints.
+            // A percentage-of-old-support gate locks small grouped guides to
+            // integer motion: the first fractional step necessarily loses a
+            // border row/column. Neither trial may win by discarding residuals.
+            const auto candidate = linearize(ref, src, window, dx, dy, floor,
+                std::array<float, 2>{motion.dx, motion.dy});
+            const auto current = linearize(ref, src, window, motion.dx, motion.dy, floor,
+                std::array<float, 2>{dx, dy});
+            if (candidate.coverage > 0 && candidate.cost < current.cost) {
+                motion.dx = dx; motion.dy = dy;
+                state = linearize(ref, src, window, dx, dy, floor);
+                accepted = true; break;
             }
             ux *= 0.5F; uy *= 0.5F;
         }
