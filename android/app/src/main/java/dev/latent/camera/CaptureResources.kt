@@ -127,7 +127,7 @@ internal class TimestampMatcher<I : AutoCloseable, R>(private val maximum: Int) 
         closed = true
         var first: Throwable? = null
         images.values.forEach {
-            try { it.close() } catch (error: Throwable) { if (first == null) first = error else first?.addSuppressed(error) }
+            try { it.close() } catch (error: Throwable) { if (first == null) first = error else first.addSuppressed(error) }
         }
         images.clear(); results.clear()
         first?.let { throw it }
@@ -138,7 +138,7 @@ internal class TimestampMatcher<I : AutoCloseable, R>(private val maximum: Int) 
 internal fun closeAll(resources: Iterable<AutoCloseable>) {
     var first: Exception? = null
     resources.forEach {
-        try { it.close() } catch (error: Exception) { if (first == null) first = error else first?.addSuppressed(error) }
+        try { it.close() } catch (error: Exception) { if (first == null) first = error else first.addSuppressed(error) }
     }
     first?.let { throw it }
 }
