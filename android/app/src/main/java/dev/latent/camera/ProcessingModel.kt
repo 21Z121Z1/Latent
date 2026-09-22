@@ -4,6 +4,7 @@ import android.app.Application
 import android.graphics.Bitmap
 import android.graphics.Matrix
 import android.net.Uri
+import androidx.core.content.edit
 import androidx.core.graphics.createBitmap
 import androidx.lifecycle.AndroidViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -40,11 +41,11 @@ class ProcessingModel(application: Application) : AndroidViewModel(application) 
     private val cancelAcquisition = AtomicReference<(() -> Unit)?>(null)
     private val preferences = application.getSharedPreferences("camera-policy", Application.MODE_PRIVATE)
     var preferVulkan = preferences.getBoolean("vulkan", true)
-        set(value) { field = value; preferences.edit().putBoolean("vulkan", value).apply() }
+        set(value) { field = value; preferences.edit { putBoolean("vulkan", value) } }
     var renderExposureEv = preferences.getFloat("render-ev", 0f).coerceIn(-2f, 2f)
-        set(value) { field = value.coerceIn(-2f, 2f); preferences.edit().putFloat("render-ev", field).apply() }
+        set(value) { field = value.coerceIn(-2f, 2f); preferences.edit { putFloat("render-ev", field) } }
     var targetNoise = preferences.getFloat("target-noise", 0.006f).coerceIn(0.004f, 0.015f)
-        set(value) { field = value.coerceIn(0.004f, 0.015f); preferences.edit().putFloat("target-noise", field).apply() }
+        set(value) { field = value.coerceIn(0.004f, 0.015f); preferences.edit { putFloat("target-noise", field) } }
 
     fun replay() {
         submit(acquire = {
@@ -172,7 +173,6 @@ class ProcessingModel(application: Application) : AndroidViewModel(application) 
             // task releases its capture lease at a cooperative stage boundary.
             worker.shutdown()
         }
-        super.onCleared()
     }
 }
 
