@@ -1,1 +1,1 @@
-{"parent":"8f4cb27f8c8d37354f715007e389a3b2e5e56e57","tree":"c8c13d894a33b0b570c7293fb33ae44b2ae97908","message":"fix(android): admit capture storage through StorageManager with emulator coverage"}
+{"parent":"64fc8c9379a883731f2abe099bfedcc8301fe8c3","tree":"84a0af8713a2f8f564008b512c256868fc4b0bd9","message":"feat(reconstruction): finish tiled joint RAW into lineage-preserving scene RGB"}
