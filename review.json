@@ -1,1 +1,1 @@
-{"parent":"70b5b1d2c82261ddfe43867037ac912859129dfb","tree":"9451744912f0d33b1e1ad215e171754c49e88cc8","message":"test(reconstruction): prove phase-aware SR against actual FusedRaw native-grid collapse"}
+{"parent":"f055548218259996c0b446912a7c88c3e1267717","tree":"df66614be72b5693c288a07983d159bbcf59fbf1","message":"test(reconstruction): verify actual RAW-sample impulses and analytic variance"}

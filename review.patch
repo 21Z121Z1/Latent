@@ -1,120 +1,112 @@
 diff --git a/docs/joint-raw-reconstruction.md b/docs/joint-raw-reconstruction.md
-index 36dd379..c85ec96 100644
+index c85ec96..579312d 100644
 --- a/docs/joint-raw-reconstruction.md
 +++ b/docs/joint-raw-reconstruction.md
-@@ -269,6 +269,18 @@ conditional variance, QR frame support and mixed/correlated bounds. Seeded
- CPU oracle and the actual Vulkan executor; it must not fall back in required-GPU
- CI. Existing exhaustive grouped-CFA CPU/Vulkan checks retain their original
- RGB/variance/frame/confidence tolerances and add phase/model comparisons.
-+A separate known-geometry comparison exercises the actual retained
-+`makeReferenceFusionSession -> finishTemporalFusion -> Malvar demosaic` route,
-+then explicitly bilinearly samples that native RGB at the SAME output grid.
-+It uses 16 known half-pixel Cartesian shifts and 12 independent R/G/B horizontal
-+and vertical stripe targets at 0.35/0.60 cycles per RAW photosite. To avoid a
-+motion-rejection straw man, this diagnostic gives legacy fusion a permissive
-+100-sigma cutoff and 1e-4 variance floor; every evaluated tap must retain effective
-+support above 15 frames. The test gates lower joint MSE against aperture-integrated
-+truth and unchanged flat spectral axes, and logs both errors. This measures
-+phase-preserving reconstruction versus actual native-grid collapse, not merely
-+versus the direct estimator's Gaussian ablation. It does not claim universal
-+real-camera quality or recommend those diagnostic fusion settings for capture.
+@@ -281,6 +281,16 @@ truth and unchanged flat spectral axes, and logs both errors. This measures
+ phase-preserving reconstruction versus actual native-grid collapse, not merely
+ versus the direct estimator's Gaussian ablation. It does not claim universal
+ real-camera quality or recommend those diagnostic fusion settings for capture.
++Actual signed RAW-sample impulses additionally exercise one and four identical
++phase frames, all three spectral axes and grouping factors 1 through 4, with
++fractional grid origins and 1x/2x spacing. An independent double-precision
++normalized Gaussian oracle checks both the impulse response and
++`sigma^2 * sum(k_i^2) / (K * sum(k_i)^2)` variance. A two-photosite kernel and an
++explicit full-support assertion isolate this analytic case from the separate
++sparse-color fallback. Identical frames must not claim missing phase detail or
++mix spectral axes. The finishing budget is `3e-6 * max(1, abs(rgb))` and
++`1e-9 + 3e-5 * variance`, for FP32 exponentiation, sums and division versus the
++double oracle; existing CPU/Vulkan differential gates remain unchanged.
  `latent_joint_scene_tests` and its required-real-Vulkan variant prove the complete
  RAW -> camera RGB -> scene -> SDR/HDR composition. They cover all four Bayer
  orders, group sizes 1 through 4 with nonzero origins, 1x/2x grids, fractional
-diff --git a/tests/test_joint_raw.cpp b/tests/test_joint_raw.cpp
-index abb0e04..f969ec3 100644
+ diff --git a/tests/test_joint_raw.cpp b/tests/test_joint_raw.cpp
+index f969ec3..4d3c8bb 100644
 --- a/tests/test_joint_raw.cpp
 +++ b/tests/test_joint_raw.cpp
-@@ -1,4 +1,5 @@
- #include "latent/reference/DirectReconstruct.h"
-+#include "latent/reference/TemporalReconstruct.h"
- #include "latent/testing/SyntheticRaw.h"
- #ifdef LATENT_JOINT_TEST_VULKAN
- #include "latent/vulkan/DirectReconstruction.h"
-@@ -119,6 +120,77 @@ void srQuality() {
+@@ -191,6 +191,77 @@ void nativeGridPhaseEvidence() {
      }
-     std::cout<<"joint-sr worst_mse_ratio="<<worstRatio<<'\n';
+     std::cout<<"joint-vs-native worst_mse_ratio="<<worstRatio<<'\n';
  }
-+// Exercise the actual retained native-grid fusion and demosaic implementation,
-+// not a reimplementation of its sampler. Exact geometry and a permissive robust
-+// cutoff keep valid phase changes from becoming a motion-rejection straw man.
-+std::vector<ReconstructedPixel> nativeGridBaseline(const Fixture& f) {
-+    reference::NormalizedRaw ref{}; ref.extent=f.source;
-+    bool matched=false;
-+    for(unsigned pattern=0;pattern<4;++pattern) {
-+        const auto cfa=static_cast<imaging::CfaPattern>(pattern);bool same=true;
-+        for(std::uint32_t y=0;y<2;++y)for(std::uint32_t x=0;x<2;++x) {
-+            const auto actual=static_cast<imaging::CfaChannel>(f.frames[0].raw[static_cast<std::size_t>(y)*f.source.width+x].channel);
-+            same= same && reference::rgbChannelIndex(imaging::cfaChannelAt(cfa,x,y))==reference::rgbChannelIndex(actual);
++// Independent normalized-Gaussian impulse response. Repeated identical frames
++// deliberately have no temporal phase diversity: the full joint policy MUST
++// select its legal Gaussian specialization rather than inventing detail. For
++// fixed same-frame variance, the per-color radiometric precision cancels from
++// the normalized response; variance is sigma^2 * sum(k_i^2) / (K * sum(k_i)^2).
++// This sends actual sensor-sample impulses through begin/add/finish, unlike the
++// separate sufficient-statistic impulse test used to verify signed covariance.
++void sensorImpulseResponse() {
++    double maximumError=0,maximumVarianceError=0;
++    constexpr float sampleVariance=0.0001F;
++    for(std::uint32_t group=1;group<=4;++group)for(const unsigned count:{1U,4U}) {
++        const Signal zero=[](float,float,std::size_t){return 0.0F;};
++        auto f=fixture(zero,std::vector<std::array<float,2>>(count,{0,0}),sampleVariance,group);
++        f.output={11,9};f.originX=15.25F;f.originY=12.25F;f.step=count==1?1.0F:0.5F;
++        for(auto& frame:f.frames) {
++            frame.warps.clear();
++            for(std::uint32_t y=0;y<f.output.height;++y)for(std::uint32_t x=0;x<f.output.width;++x)
++                frame.warps.push_back({f.originX+static_cast<float>(x)*f.step,f.originY+static_cast<float>(y)*f.step,1,0});
 +        }
-+        if(same){ref.cfa=cfa;matched=true;break;}
-+    }
-+    check(matched,"legacy comparator requires a regular Bayer spectral layout");
-+    const auto copySamples=[](reference::NormalizedRaw& n,const Frame& frame) {
-+        n.samples.clear();n.samples.reserve(frame.raw.size());
-+        for(const auto& sample:frame.raw)n.samples.push_back({sample.value,sample.variance,static_cast<float>(sample.valid),1});
-+    };
-+    copySamples(ref,f.frames.front());
-+    reference::TemporalPolicy policy{};policy.residualCutoffSigma=100;
-+    policy.varianceFloor=1e-4F;policy.missingNoiseVariance=1e-4F;
-+    auto session=reference::makeReferenceFusionSession(ref,policy);
-+    for(std::size_t i=0;i<f.frames.size();++i) {
-+        auto source=ref;copySamples(source,f.frames[i]);
-+        reference::AlignmentField field{};field.source=imaging::FrameId{i+1};field.reference=imaging::FrameId{1};
-+        field.extent=f.source;field.tileSize=policy.tileSize;
-+        field.columns=(f.source.width+field.tileSize-1)/field.tileSize;
-+        field.rows=(f.source.height+field.tileSize-1)/field.tileSize;
-+        field.tiles.assign(static_cast<std::size_t>(field.columns)*field.rows,
-+            {f.frames[i].warps[0].x-f.originX,f.frames[i].warps[0].y-f.originY,1,0});
-+        (void)session->add(source,field,i==0);
-+    }
-+    const auto fused=reference::finishTemporalFusion(ref,session->finish(),{});
-+    const auto rgb=reference::demosaicSensorLinear(fused.sensor,{1,1,1,1},reference::DemosaicMethod::MalvarHeCutler2004);
-+    std::vector<ReconstructedPixel> out(static_cast<std::size_t>(f.output.pixelCount()));
-+    for(std::uint32_t y=0;y<f.output.height;++y)for(std::uint32_t x=0;x<f.output.width;++x) {
-+        const float rx=f.originX+static_cast<float>(x)*f.step,ry=f.originY+static_cast<float>(y)*f.step;
-+        const auto ix=static_cast<std::uint32_t>(rx),iy=static_cast<std::uint32_t>(ry);
-+        const float tx=rx-static_cast<float>(ix),ty=ry-static_cast<float>(iy);
-+        // Baseline only: explicit bilinear display-grid resampling after the
-+        // native CFA evidence has already collapsed. Joint never calls this.
-+        for(std::uint32_t j=0;j<2;++j)for(std::uint32_t k=0;k<2;++k) {
-+            const float w=(k?tx:1-tx)*(j?ty:1-ty);
-+            const auto index=static_cast<std::size_t>(iy+j)*f.source.width+ix+k;
-+            check(fused.uncertainty.effectiveSampleCount[index]>15,
-+                "legacy comparison must retain almost all 16 phase frames, not fall back to reference");
-+            for(std::size_t c=0;c<3;++c)out[static_cast<std::size_t>(y)*f.output.width+x].rgb[c]+=w*rgb.rgb[index*3+c];
++        for(std::size_t active=0;active<3;++active)for(const float amplitude:{-0.75F,2.0F}) {
++            std::size_t impulse=0;bool found=false;
++            for(std::uint32_t y=12;y<20 && !found;++y)for(std::uint32_t x=16;x<24 && !found;++x) {
++                const auto index=static_cast<std::size_t>(y)*f.source.width+x;
++                const auto channel=f.frames[0].raw[index].channel;
++                if((channel==0?0U:channel==3?2U:1U)==active){impulse=index;found=true;}
++            }
++            check(found,"impulse fixture has an actual photosite in every spectral channel");
++            for(auto& frame:f.frames)for(std::size_t i=0;i<frame.raw.size();++i)frame.raw[i].value=i==impulse?amplitude:0;
++            auto policy=reference::DirectKernelPolicy::superResolution();policy.detailSigma=2;
++            const auto out=reconstruct(f,policy);
++            bool observed=false;
++            for(std::size_t i=0;i<out.size();++i) {
++                const double wx=f.frames[0].warps[i].x,wy=f.frames[0].warps[i].y;
++                std::array<double,3> mass{},squareMass{},response{};
++                // Sum the declared rectangular support in DOUBLE, with canonical
++                // spectral labels from the input fixture, not Bayer parity or
++                // any reconstruction gather/anchor/accumulator implementation.
++                for(std::uint32_t y=0;y<f.source.height;++y)for(std::uint32_t x=0;x<f.source.width;++x) {
++                    if(x<std::floor(wx)-f.geometry.radiusX || x>std::floor(wx)+f.geometry.radiusX+1 ||
++                       y<std::floor(wy)-f.geometry.radiusY || y>std::floor(wy)+f.geometry.radiusY+1)continue;
++                    const auto index=static_cast<std::size_t>(y)*f.source.width+x;
++                    const auto channel=f.frames[0].raw[index].channel;
++                    const std::size_t c=channel==0?0U:channel==3?2U:1U;
++                    const double dx=x-wx,dy=y-wy,k=std::exp(-(dx*dx+dy*dy)/8.0);
++                    mass[c]+=k;squareMass[c]+=k*k;
++                    if(index==impulse)response[c]+=k*amplitude;
++                }
++                for(std::size_t c=0;c<3;++c) {
++                    check(mass[c]*count>=0.1,"impulse fixture has full spatial support without the sparse-color anchor blend");
++                    const double expected=response[c]/mass[c];
++                    const double variance=sampleVariance*squareMass[c]/(count*mass[c]*mass[c]);
++                    const double error=std::abs(out[i].rgb[c]-expected);
++                    maximumError=std::max(maximumError,error);
++                    maximumVarianceError=std::max(maximumVarianceError,std::abs(out[i].variance[c]-variance));
++                    // FP32 exp, normalized weighted summation and division vs
++                    // independent double oracle; 3e-6 relative-or-absolute RGB,
++                    // 1e-9 + 3e-5 relative variance. No existing gate is changed.
++                    if(error>=3e-6*std::max(1.0,std::abs(expected)))std::cerr<<"impulse group="<<group<<" K="<<count<<" active="<<active<<" amplitude="<<amplitude<<" pixel="<<i<<" channel="<<c<<" actual="<<out[i].rgb[c]<<" expected="<<expected<<" blend="<<out[i].modelBlend[c]<<" phase="<<out[i].samplingDiversity[c]<<'\n';
++                    check(error<3e-6*std::max(1.0,std::abs(expected)),"RAW impulse matches normalized spatial kernel response");
++                    check(std::abs(out[i].variance[c]-variance)<1e-9+3e-5*variance,"RAW impulse has analytic independent-frame variance");
++                    check(out[i].modelBlend[c]==0 && out[i].samplingDiversity[c]<2e-5F,
++                        "identical impulse frames must not claim unobserved phase detail");
++                    if(c!=active)check(out[i].rgb[c]==0,"sensor impulse must not contaminate another spectral channel");
++                    if(std::abs(expected)>0.01) {observed=true;check(out[i].rgb[c]*amplitude>0,"impulse sign survives reconstruction");}
++                }
++            }
++            check(observed,"impulse tests must observe a nontrivial sensor response");
 +        }
 +    }
-+    return out;
-+}
-+void nativeGridPhaseEvidence() {
-+    double worstRatio=0;
-+    for(float frequency:{0.35F,0.60F})for(unsigned axis=0;axis<2;++axis)for(std::size_t active=0;active<3;++active) {
-+        const Signal signal=[=](float x,float y,std::size_t c) {
-+            return 0.3F+0.1F*static_cast<float>(c)+(c==active?0.1F*std::sin(2*pi*frequency*(axis?y:x)):0.0F);
-+        };
-+        const auto f=fixture(signal,cartesian());
-+        const auto joint=reconstruct(f,reference::DirectKernelPolicy::superResolution());
-+        const auto collapsed=nativeGridBaseline(f);
-+        const double jointError=mse(f,joint,signal),collapsedError=mse(f,collapsed,signal);
-+        const double ratio=jointError/collapsedError;worstRatio=std::max(worstRatio,ratio);
-+        std::cout<<"joint-vs-native frequency="<<frequency<<" axis="<<axis<<" color="<<active
-+            <<" joint_mse="<<jointError<<" fused_demosaic_upscale_mse="<<collapsedError<<" ratio="<<ratio<<'\n';
-+        check(jointError<collapsedError,"fractional RAW evidence must beat actual native FusedRaw collapse on independent color stripes");
-+        for(const auto& pixel:joint)for(std::size_t c=0;c<3;++c)if(c!=active)
-+            check(std::abs(pixel.rgb[c]-(0.3F+0.1F*static_cast<float>(c)))<2e-5F,"independent color stripe must not contaminate flat spectral axes");
-+    }
-+    std::cout<<"joint-vs-native worst_mse_ratio="<<worstRatio<<'\n';
++    std::cout<<"joint-raw-impulse max_rgb_error="<<maximumError<<" max_variance_error="<<maximumVarianceError<<'\n';
 +}
  void homogeneityAndSignedValues() {
      const Signal signal=[](float x,float y,std::size_t c){return -0.12F+0.25F*static_cast<float>(c)+0.08F*std::sin(x*0.7F+y*0.3F);};
      auto f=fixture(signal,cartesian(),1e-5F);
-@@ -332,7 +404,7 @@ int main() {
+@@ -404,7 +475,7 @@ int main() {
          }
          probe.reset();
  #endif
--        srQuality();homogeneityAndSignedValues();phaseAndAxisControls();spatialNoiseDebias();for(unsigned mode=0;mode<3;++mode)conditionalNoise(mode);sparseColorBorders();runtimeTilingAndValidation();
-+        srQuality();nativeGridPhaseEvidence();homogeneityAndSignedValues();phaseAndAxisControls();spatialNoiseDebias();for(unsigned mode=0;mode<3;++mode)conditionalNoise(mode);sparseColorBorders();runtimeTilingAndValidation();
+-        srQuality();nativeGridPhaseEvidence();homogeneityAndSignedValues();phaseAndAxisControls();spatialNoiseDebias();for(unsigned mode=0;mode<3;++mode)conditionalNoise(mode);sparseColorBorders();runtimeTilingAndValidation();
++        srQuality();nativeGridPhaseEvidence();sensorImpulseResponse();homogeneityAndSignedValues();phaseAndAxisControls();spatialNoiseDebias();for(unsigned mode=0;mode<3;++mode)conditionalNoise(mode);sparseColorBorders();runtimeTilingAndValidation();
  #ifdef LATENT_JOINT_TEST_VULKAN
          std::cout<<"joint CPU/GPU max_scaled_signal_error="<<maxBackendError<<'\n';
  #endif
