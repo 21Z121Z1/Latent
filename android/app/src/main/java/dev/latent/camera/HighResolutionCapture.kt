@@ -93,7 +93,7 @@ internal class HighResolutionCapture(private val context: Context) {
                 else c.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP))
             require(map.getOutputSizes(ImageFormat.RAW_SENSOR)?.contains(o.size) == true) { "RAW size absent from selected pixel-mode map" }
             if (o.pixelMode == 1) require(c.availableCaptureRequestKeys.contains(CaptureRequest.SENSOR_PIXEL_MODE))
-            if (o.croppedRaw) require(c.get(CameraCharacteristics.SCALER_AVAILABLE_STREAM_USE_CASES)?.contains(CameraMetadata.SCALER_AVAILABLE_STREAM_USE_CASES_CROPPED_RAW) == true)
+            if (o.croppedRaw) require(c.get(CameraCharacteristics.SCALER_AVAILABLE_STREAM_USE_CASES)?.contains(CameraMetadata.SCALER_AVAILABLE_STREAM_USE_CASES_CROPPED_RAW.toLong()) == true)
             require(checkNotNull(c.get(CameraCharacteristics.SENSOR_INFO_EXPOSURE_TIME_RANGE)).contains(o.exposureNs))
             require(checkNotNull(c.get(CameraCharacteristics.SENSOR_INFO_SENSITIVITY_RANGE)).contains(o.iso))
             val memory = ActivityManager.MemoryInfo()
@@ -125,7 +125,7 @@ internal class HighResolutionCapture(private val context: Context) {
             camera = device
             val output = OutputConfiguration(rawReader.surface)
             if (Build.VERSION.SDK_INT >= 31) output.addSensorPixelModeUsed(o.pixelMode)
-            if (o.croppedRaw) output.streamUseCase = CameraMetadata.SCALER_AVAILABLE_STREAM_USE_CASES_CROPPED_RAW
+            if (o.croppedRaw) output.streamUseCase = CameraMetadata.SCALER_AVAILABLE_STREAM_USE_CASES_CROPPED_RAW.toLong()
             val configured = CompletableFuture<CameraCaptureSession>()
             device.createCaptureSession(SessionConfiguration(SessionConfiguration.SESSION_REGULAR, listOf(output), executor,
                 object : CameraCaptureSession.StateCallback() {
