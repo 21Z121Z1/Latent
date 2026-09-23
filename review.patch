@@ -1,0 +1,11 @@
+diff --git a/android/app/src/main/java/dev/latent/camera/HighResolutionCapture.kt b/android/app/src/main/java/dev/latent/camera/HighResolutionCapture.kt
+--- a/android/app/src/main/java/dev/latent/camera/HighResolutionCapture.kt
++++ b/android/app/src/main/java/dev/latent/camera/HighResolutionCapture.kt
+@@ -13,7 +13,6 @@ import android.hardware.camera2.CameraManager
+ import android.hardware.camera2.CameraMetadata
+ import android.hardware.camera2.CaptureFailure
+ import android.hardware.camera2.CaptureRequest
+-import android.hardware.camera2.CaptureRequest
+ import android.hardware.camera2.CaptureResult
+ import android.hardware.camera2.TotalCaptureResult
+ import android.hardware.camera2.params.OutputConfiguration
