@@ -1,7 +1,6 @@
 <resources>
     <string name="app_name">Latent</string>
-    <string name="replay_fixture">Replay synthetic RAW fixture</string>
-    <string name="processing">Processing RAW burst</string>
+    <string name="replay_fixture">Try sample RAW</string>
     <string name="result_description">Reconstructed capture</string>
     <string name="cancel">Cancel</string>
     <string name="save">Save image</string>
@@ -11,10 +10,21 @@
     <string name="switch_camera">Select camera</string>
     <string name="permission">Allow camera access</string>
     <string name="latest_capture">Open latest capture</string>
-    <string name="ready">Night RAW</string>
+    <string name="camera_mode">NIGHT RAW</string>
+    <string name="raw_badge">RAW</string>
+    <string name="sample_short">SAMPLE</string>
+    <string name="controls_short">CONTROLS</string>
+    <string name="camera_access_needed">Camera access needed</string>
+    <string name="capture_unavailable">RAW capture unavailable</string>
+    <string name="opening_camera">Opening camera</string>
+    <string name="no_capture">No capture yet</string>
+    <string name="done">Done</string>
+    <string name="back">Back</string>
+    <string name="saved">Saved</string>
+    <string name="vulkan_help">Use Vulkan fusion when this device supports it.</string>
     <string name="fixture_notice">Synthetic fixture replay. This is not live camera validation.</string>
     <string name="raw_unsupported">Night RAW pipeline unsupported on this camera/device</string>
-    <string name="grant_permission">Camera permission is required for live preview and capture. Fixture replay does not use the camera.</string>
+    <string name="grant_permission">Allow camera access to see the live preview and capture RAW.</string>
     <string name="diagnostics">Diagnostics</string>
     <string name="vulkan_fusion">Prefer Vulkan fusion</string>
     <string name="render_exposure">Render exposure: %1$.1f EV</string>
