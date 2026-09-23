@@ -5,6 +5,8 @@ target_sources(latent_core PRIVATE
     src/runtime/Camera2Sampling.cpp
     src/runtime/TiledReconstruction.cpp
     src/reference/DirectReconstruct.cpp
+    src/reference/JointScene.cpp
+    src/runtime/JointScene.cpp
     src/runtime/TemporalPipeline.cpp
     src/runtime/CapturePlan.cpp
     src/runtime/CfaTransport.cpp
@@ -71,6 +73,7 @@ if(LATENT_BUILD_TESTS)
     endif()
     latent_temporal_test(latent_highres_tests tests/test_highres.cpp)
     latent_temporal_test(latent_joint_raw_tests tests/test_joint_raw.cpp)
+    latent_temporal_test(latent_joint_scene_tests tests/test_joint_scene.cpp)
     latent_temporal_test(latent_camera2_sampling_tests tests/test_camera2_sampling.cpp)
     latent_temporal_test(latent_temporal_tests tests/test_temporal.cpp)
     latent_temporal_test(latent_registration_tests tests/test_registration.cpp)
@@ -81,6 +84,8 @@ if(LATENT_BUILD_TESTS)
         latent_temporal_test(latent_highres_vulkan_tests tests/test_highres_vulkan.cpp)
         latent_temporal_test(latent_joint_raw_vulkan_tests tests/test_joint_raw.cpp)
         target_compile_definitions(latent_joint_raw_vulkan_tests PRIVATE LATENT_JOINT_TEST_VULKAN=1)
+        latent_temporal_test(latent_joint_scene_vulkan_tests tests/test_joint_scene.cpp)
+        target_compile_definitions(latent_joint_scene_vulkan_tests PRIVATE LATENT_JOINT_TEST_VULKAN=1)
         latent_temporal_test(latent_temporal_vulkan_tests tests/test_temporal_vulkan.cpp)
     endif()
 endif()

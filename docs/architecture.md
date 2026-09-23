@@ -374,6 +374,16 @@ N=1 specialization retain conservative behavior when evidence cannot support the
 fit. Sampling support and quality are not interchangeable. Output is explicitly
 green-balanced **camera-linear RGB**, not yet an AP1/D60 `SceneFrame`; WB/color
 conversion, scene semantics, rendering and codec authority remain downstream.
+`reconstructRawScene` composes this operation with explicit scene finishing.
+It uses the existing color resolver, checks the reference green calibration,
+applies RGB white balance and scene-coordinate scale once, and retains captured
+member lineage through existing rendering. Missing color coverage fails closed.
+Only final scene RGB and optional conditional variance bounds are image-sized;
+no intermediate full-frame camera RGB or mandatory `FusedRaw` is allocated.
+Cross-channel covariance is unavailable, so scene uncertainty is a bound, not a
+replacement affine shot/read model. Aggregate direct moments do not expose
+per-frame regional tap counts; the lineage's contribution vector is explicitly
+unavailable, not fabricated from frame count or zero-filled.
 No learned weights or unlicensed JSR implementation are imported.
 
 The [joint RAW specification](joint-raw-reconstruction.md) records mathematics,

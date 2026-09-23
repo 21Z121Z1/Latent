@@ -206,6 +206,47 @@ diagnostics are available through the C++ API; that legacy file stores only its
 original fields, while the JSON trace includes aggregate diagnostics. Kotlin
 gets the algorithm version from the native report instead of duplicating it.
 
+## Camera-linear to scene composition
+
+`finishDirectSceneTile` is the deterministic FP32 boundary from the existing
+camera RGB/coverage/variance payload to scene RGB. It calls the SAME
+`cameraToSceneMatrix` resolver as native-grid demosaic finishing, including both
+DNG matrix routes. Input is already balanced between G0/G1 by the reference
+observation; finishing applies `[WB_R, mean(WB_G0, WB_G1), WB_B]`, then AP1/D60
+conversion and the explicit positive finite `sceneScaleEV` coordinate. Sensor
+correction flags are rejected here: lens shading and defect rejection belong to
+RAW normalization. There is no clamp, re-quantization or second demosaic.
+
+`reconstructRawScene` adapts the canonical tiled executor into that boundary.
+Reference identity is explicit because it fixes both radiometry and the green
+balance. An inconsistent requested green ratio fails before reading RAW. Output
+RGB plus optional variance storage is admitted BEFORE allocating the image; its
+actual vector capacity is also charged by the tiled planner. Color is finished
+row-by-row directly into the final scene. CPU/Vulkan selection changes only the
+RAW execution; scene finishing remains the FP32 reference operation. Existing
+SDR/HDR rendering consumes the resulting ordinary `SceneFrame` unchanged.
+
+The source burst, sequence, calibration, reference and ALL captured frame IDs
+are retained in immutable lineage, including reduced/rejected members. Aggregate
+direct moments do not expose per-frame regional tap counts: those contributions
+remain explicitly unavailable (empty), not guessed from frame count. The native
+`FusedRaw` route retains its existing richer regional audit. A missing RGB
+channel cannot silently become black in `SceneFrame`; scene materialization
+fails while `reconstructRawTiles` remains available for masked evidence output.
+
+With camera-channel conditional variances `v_c` but no cross-color covariance,
+the separate scene bound is
+
+```
+bound_s = (sceneScale * sum_c abs(M_sc) * WB_c * sqrt(v_c))^2
+```
+
+This triangle bound permits arbitrary cross-channel correlation. It retains the
+RAW estimator's fixed-weight/support/geometry conditions; it is not a calibrated
+posterior and does not include model, motion or calibration error. It stays in
+`JointSceneResult::conditionalVarianceUpperBound`; `SceneFrame`'s single-RAW
+shot/read noise representation is not populated with a fabricated fit.
+
 ## Validation and reproduction
 
 `latent_joint_raw_tests` supplies independent 4x4 photosite integration of
@@ -228,6 +269,26 @@ conditional variance, QR frame support and mixed/correlated bounds. Seeded
 CPU oracle and the actual Vulkan executor; it must not fall back in required-GPU
 CI. Existing exhaustive grouped-CFA CPU/Vulkan checks retain their original
 RGB/variance/frame/confidence tolerances and add phase/model comparisons.
+`latent_joint_scene_tests` and its required-real-Vulkan variant prove the complete
+RAW -> camera RGB -> scene -> SDR/HDR composition. They cover all four Bayer
+orders, group sizes 1 through 4 with nonzero origins, 1x/2x grids, fractional
+output coordinates, exact tiled/full equivalence, explicit non-first references,
+frame-budget reduction with complete capture lineage, unequal green response,
+K=1, cancellation, insufficient memory before source reads and all-clipped
+failure. The tile oracle independently composes a double-precision color matrix
+and enumerates all eight correlated noise signs to attain the variance bound.
+Both DNG routes are compared with the established native-grid demosaic boundary
+on constant spectral fields. Malformed coverage, NaN/Inf, arithmetic overflow,
+invalid DNG/WB and scene-coordinate underflow-to-zero fail explicitly.
+
+Scene differential tolerances PROPAGATE the existing camera budgets through the
+absolute WB/matrix row norm: RGB `3e-5`; variance interval
+`1e-7 + 1e-3*v`. Monotone square roots propagate the variance endpoints, including
+near zero. Finishing-only checks allow 2e-6 relative FP32 color/bound error and
+4e-6 back-normalized gain error for rounded multiply, square root and accumulation.
+The native-grid DNG composition comparison permits 4e-6 relative error for the
+extra demosaic operations. The unequal-green RAW test additionally permits
+4e-4 absolute error for 12-bit ADC quantization. No raw comparison gate is relaxed.
 Existing temporal/registration/Camera2/RAW transport suites remain required.
 Android's existing installed-APK output-size check guards V1 wire compatibility.
 Exact-head CI results and downloadable artifacts belong to the PR/checks, not a

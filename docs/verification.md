@@ -274,3 +274,12 @@ conditioning and square-root frame statistics are fixes, not reasons to loosen
 RGB or effective-frame gates. See the [specification](joint-raw-reconstruction.md)
 for exact hypotheses, policies, reproduction commands and limits. Android's V1
 file-size test remains required after changing the in-memory pixel structure.
+
+The `latent_joint_scene_tests` and `latent_joint_scene_vulkan_tests` suites add
+RAW-to-scene-to-render composition without `FusedRaw`, explicit coverage failure,
+calibration/lineage/memory admission, both DNG color paths and conditional
+cross-channel covariance bounds. The GPU suite requires actual Vulkan execution.
+Their numerical budgets propagate the unchanged camera-oracle budgets through
+the color transform; see the joint specification. Both are registered in the
+normal CTest matrix, including no-Vulkan and sanitizer configurations where
+applicable. No separate optional workflow is needed for these gates.

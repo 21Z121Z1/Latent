@@ -3,7 +3,7 @@
 Status: Active
 Owner: Latent reconstruction engineering
 Related: ADR 0005; Plan 0004
-Current step: software implementation and local validation complete; exact-head Actions convergence is the delivery gate.
+Current step: implementation complete; integration and merge remain gated by the live exact-head PR checks, not a copied CI snapshot.
 
 ## Goal
 
@@ -43,7 +43,9 @@ increment's mathematical/provenance/compatibility detail. `SensorSampling`
 remains the CFA authority; the continuous guide remains the registration solver.
 Observations, delegated kernel policy and capabilities remain distinct. Output
 is explicitly camera-linear, not a falsely labelled `SceneFrame`. Scene scale,
-WB/color conversion, rendering and encoding are not folded into fusion.
+WB/color conversion, rendering and encoding are not folded into fusion. A separate
+`reconstructRawScene` adapter now composes the camera-linear output with the
+canonical scene/color boundary and existing SDR/HDR rendering.
 
 Implemented: scale-homogeneous robust weights; correct spatial-noise debiasing;
 six-basis quadratic moments; phase/SNR/leverage admission; Gaussian fallback;
@@ -51,6 +53,12 @@ full signed noise covariance and separate correlated bounds; QR-root frame
 support; affine-plus-row inverse Jacobians; matching GLSL; actual-size arena
 admission; versioned trace/diagnostics; explicit high-detail policy; N=1
 specialization; V1 Android wire packing; reproducible matched-grid benchmark.
+Also implemented: direct camera-to-scene FP32 finishing; shared DNG/matrix color
+resolution; calibrated common-green validation; fail-closed missing RGB coverage;
+conditional cross-color variance bounds; pre-allocation scene residency admission;
+complete captured-member lineage and rendering composition. Per-frame regional
+contribution counts remain unavailable from direct aggregate moments; no counts
+are invented. The existing FusedRaw audit is unchanged.
 JSR source/weights/binaries are neither consumed nor redistributed.
 
 ## Steps and validation
@@ -63,7 +71,11 @@ JSR source/weights/binaries are neither consumed nor redistributed.
    rather than loosening comparison gates.
 4. Lower to Vulkan, validate actual execution against the CPU oracle and add the
    same SR/gain/phase property fixtures to required-GPU CI.
-5. Publish commits and PR, inspect latest checks/artifacts, fix failures and
+5. Compose the direct camera-linear output with the existing scene boundary;
+   prove DNG/matrix, green calibration, bound propagation, lineage, cancellation
+   and output admission on CPU and actual Vulkan. Fix Android Kotlin long-valued
+   Camera2 use cases and explicit native semantic ID construction.
+6. Publish commits and PR, inspect latest checks/artifacts, fix failures and
    rerun until the software acceptance gates converge.
 
 Local strict Release no-Vulkan and software-Vulkan runs are evidence for the
@@ -82,11 +94,13 @@ the algorithm identifier. No automatic production capture-mode promotion occurs.
 
 ## Status ledger
 
-Completed: live-state reconciliation, provenance boundary, implementation,
-independent CPU evidence, initial full software-Vulkan convergence and Android
-source compatibility updates.
-Current: final source review, publication and exact-head CI/artifact inspection.
-Remaining delivery gate: latest applicable Actions and Android installed-APK checks.
+Implemented: live-state reconciliation, provenance boundary, joint CPU/Vulkan
+reconstruction, scene/render composition, independent property/differential tests
+and Android source compatibility corrections. Local strict no-Vulkan and actual
+software-Vulkan suites pass; that is not a claim about an arbitrary newer commit.
+Integration status is the live PR's exact-head native, sanitizer, high-resolution
+and Android build/unit/lint/installed-APK checks. Merge requires those gates and
+the stacked prerequisite; this plan stays Active until integration is merged.
 
 ## Risks / deliberately unclaimed capabilities
 

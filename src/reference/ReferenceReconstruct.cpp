@@ -16,6 +16,9 @@ namespace latent::reference {
 namespace {
 
 void validateConfig(const ReconstructionConfig& config) {
+    if (config.colorPath != ColorPath::ExplicitMatrix && config.colorPath != ColorPath::DngProfile) {
+        throw std::invalid_argument("unknown reconstruction color path");
+    }
     if (!std::isfinite(config.sceneScaleEV)) {
         throw std::invalid_argument("sceneScaleEV must be finite");
     }
@@ -68,7 +71,18 @@ std::vector<imaging::DefectPixel> collectDefects(
     return defects;
 }
 
+}  // namespace
+
+float sceneCoordinateScale(float sceneScaleEV) {
+    const float scale = std::exp2(sceneScaleEV);
+    if (!std::isfinite(sceneScaleEV) || !std::isfinite(scale) || scale <= 0.0F) {
+        throw std::invalid_argument("sceneScaleEV is outside the positive finite FP32 coordinate range");
+    }
+    return scale;
+}
+
 imaging::Matrix3f cameraToSceneMatrix(const ReconstructionConfig& config) {
+    validateConfig(config);
     imaging::Matrix3f cameraToScene = imaging::Matrix3f::identity();
     if (config.colorPath == ColorPath::DngProfile) {
         const auto profileCheck = validateDngProfile(config.dngProfile);
@@ -84,8 +98,6 @@ imaging::Matrix3f cameraToSceneMatrix(const ReconstructionConfig& config) {
 
     return cameraToScene;
 }
-
-}  // namespace
 
 imaging::SceneFrame reconstructSingleRaw(
     const imaging::RawFrame& raw,
@@ -135,7 +147,7 @@ imaging::SceneFrame reconstructSingleRaw(
             lensShadingApplied,
             lensShadingApplied ? &*raw.lensShading.value : nullptr,
             cameraToSceneMatrix(config),
-            std::exp2(config.sceneScaleEV),
+            sceneCoordinateScale(config.sceneScaleEV),
             config.demosaicMethod);
     }
 
@@ -163,10 +175,7 @@ imaging::SceneFrame reconstructSensorLinear(
     scene.image.extent = rgb.extent;
     scene.image.rgb.resize(static_cast<std::size_t>(rgb.extent.pixelCount()) * 3U);
     scene.sceneScaleEV = config.sceneScaleEV;
-    const float sceneScale = std::exp2(config.sceneScaleEV);
-    if (!std::isfinite(sceneScale)) {
-        throw std::invalid_argument("sceneScaleEV is outside the finite FP32 coordinate range");
-    }
+    const float sceneScale = sceneCoordinateScale(config.sceneScaleEV);
     scene.whiteBalanceConfidence = config.whiteBalanceConfidence;
 
     for (std::size_t i = 0; i < scene.image.rgb.size(); i += 3U) {
