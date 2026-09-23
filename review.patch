@@ -1,11 +1,13 @@
-diff --git a/android/app/src/main/java/dev/latent/camera/HighResolutionCapture.kt b/android/app/src/main/java/dev/latent/camera/HighResolutionCapture.kt
---- a/android/app/src/main/java/dev/latent/camera/HighResolutionCapture.kt
-+++ b/android/app/src/main/java/dev/latent/camera/HighResolutionCapture.kt
-@@ -13,7 +13,6 @@ import android.hardware.camera2.CameraManager
- import android.hardware.camera2.CameraMetadata
- import android.hardware.camera2.CaptureFailure
- import android.hardware.camera2.CaptureRequest
--import android.hardware.camera2.CaptureRequest
- import android.hardware.camera2.CaptureResult
- import android.hardware.camera2.TotalCaptureResult
- import android.hardware.camera2.params.OutputConfiguration
+diff --git a/android/app/src/main/cpp/HighResolutionNative.cpp b/android/app/src/main/cpp/HighResolutionNative.cpp
+index 6530d93..aac2f8e 100644
+--- a/android/app/src/main/cpp/HighResolutionNative.cpp
++++ b/android/app/src/main/cpp/HighResolutionNative.cpp
+@@ -75,7 +75,7 @@ extern "C" JNIEXPORT jstring JNICALL Java_dev_latent_camera_NativeBridge_reconst
+         const auto count=e->GetArrayLength(inputs);
+         if(count<1||count>32||e->GetArrayLength(modes)!=count||e->GetArrayLength(paths)!=count||thermal<0||thermal>2)
+             throw std::invalid_argument("invalid file burst membership/thermal observation");
+-        imaging::RawBurst burst{};burst.id={1};burst.sequence={1};burst.calibration={1};
++        imaging::RawBurst burst{};burst.id=imaging::BurstId{1};burst.sequence=imaging::CaptureSequenceId{1};burst.calibration=imaging::CalibrationId{1};
+         std::vector<runtime::RawFileBinding> files;std::vector<ParsedRawInput> parsed;
+         for(jsize n=0;n<count;++n) {
+             LocalRef input(e,e->GetObjectArrayElement(inputs,n)),mode(e,e->GetObjectArrayElement(modes,n)),path(e,e->GetObjectArrayElement(paths,n));checkJava(e);
