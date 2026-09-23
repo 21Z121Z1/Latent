@@ -281,6 +281,16 @@ truth and unchanged flat spectral axes, and logs both errors. This measures
 phase-preserving reconstruction versus actual native-grid collapse, not merely
 versus the direct estimator's Gaussian ablation. It does not claim universal
 real-camera quality or recommend those diagnostic fusion settings for capture.
+Actual signed RAW-sample impulses additionally exercise one and four identical
+phase frames, all three spectral axes and grouping factors 1 through 4, with
+fractional grid origins and 1x/2x spacing. An independent double-precision
+normalized Gaussian oracle checks both the impulse response and
+`sigma^2 * sum(k_i^2) / (K * sum(k_i)^2)` variance. A two-photosite kernel and an
+explicit full-support assertion isolate this analytic case from the separate
+sparse-color fallback. Identical frames must not claim missing phase detail or
+mix spectral axes. The finishing budget is `3e-6 * max(1, abs(rgb))` and
+`1e-9 + 3e-5 * variance`, for FP32 exponentiation, sums and division versus the
+double oracle; existing CPU/Vulkan differential gates remain unchanged.
 `latent_joint_scene_tests` and its required-real-Vulkan variant prove the complete
 RAW -> camera RGB -> scene -> SDR/HDR composition. They cover all four Bayer
 orders, group sizes 1 through 4 with nonzero origins, 1x/2x grids, fractional

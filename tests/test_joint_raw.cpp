@@ -191,6 +191,77 @@ void nativeGridPhaseEvidence() {
     }
     std::cout<<"joint-vs-native worst_mse_ratio="<<worstRatio<<'\n';
 }
+// Independent normalized-Gaussian impulse response. Repeated identical frames
+// deliberately have no temporal phase diversity: the full joint policy MUST
+// select its legal Gaussian specialization rather than inventing detail. For
+// fixed same-frame variance, the per-color radiometric precision cancels from
+// the normalized response; variance is sigma^2 * sum(k_i^2) / (K * sum(k_i)^2).
+// This sends actual sensor-sample impulses through begin/add/finish, unlike the
+// separate sufficient-statistic impulse test used to verify signed covariance.
+void sensorImpulseResponse() {
+    double maximumError=0,maximumVarianceError=0;
+    constexpr float sampleVariance=0.0001F;
+    for(std::uint32_t group=1;group<=4;++group)for(const unsigned count:{1U,4U}) {
+        const Signal zero=[](float,float,std::size_t){return 0.0F;};
+        auto f=fixture(zero,std::vector<std::array<float,2>>(count,{0,0}),sampleVariance,group);
+        f.output={11,9};f.originX=15.25F;f.originY=12.25F;f.step=count==1?1.0F:0.5F;
+        for(auto& frame:f.frames) {
+            frame.warps.clear();
+            for(std::uint32_t y=0;y<f.output.height;++y)for(std::uint32_t x=0;x<f.output.width;++x)
+                frame.warps.push_back({f.originX+static_cast<float>(x)*f.step,f.originY+static_cast<float>(y)*f.step,1,0});
+        }
+        for(std::size_t active=0;active<3;++active)for(const float amplitude:{-0.75F,2.0F}) {
+            std::size_t impulse=0;bool found=false;
+            for(std::uint32_t y=12;y<20 && !found;++y)for(std::uint32_t x=16;x<24 && !found;++x) {
+                const auto index=static_cast<std::size_t>(y)*f.source.width+x;
+                const auto channel=f.frames[0].raw[index].channel;
+                if((channel==0?0U:channel==3?2U:1U)==active){impulse=index;found=true;}
+            }
+            check(found,"impulse fixture has an actual photosite in every spectral channel");
+            for(auto& frame:f.frames)for(std::size_t i=0;i<frame.raw.size();++i)frame.raw[i].value=i==impulse?amplitude:0;
+            auto policy=reference::DirectKernelPolicy::superResolution();policy.detailSigma=2;
+            const auto out=reconstruct(f,policy);
+            bool observed=false;
+            for(std::size_t i=0;i<out.size();++i) {
+                const double wx=f.frames[0].warps[i].x,wy=f.frames[0].warps[i].y;
+                std::array<double,3> mass{},squareMass{},response{};
+                // Sum the declared rectangular support in DOUBLE, with canonical
+                // spectral labels from the input fixture, not Bayer parity or
+                // any reconstruction gather/anchor/accumulator implementation.
+                for(std::uint32_t y=0;y<f.source.height;++y)for(std::uint32_t x=0;x<f.source.width;++x) {
+                    if(x<std::floor(wx)-f.geometry.radiusX || x>std::floor(wx)+f.geometry.radiusX+1 ||
+                       y<std::floor(wy)-f.geometry.radiusY || y>std::floor(wy)+f.geometry.radiusY+1)continue;
+                    const auto index=static_cast<std::size_t>(y)*f.source.width+x;
+                    const auto channel=f.frames[0].raw[index].channel;
+                    const std::size_t c=channel==0?0U:channel==3?2U:1U;
+                    const double dx=x-wx,dy=y-wy,k=std::exp(-(dx*dx+dy*dy)/8.0);
+                    mass[c]+=k;squareMass[c]+=k*k;
+                    if(index==impulse)response[c]+=k*amplitude;
+                }
+                for(std::size_t c=0;c<3;++c) {
+                    check(mass[c]*count>=0.1,"impulse fixture has full spatial support without the sparse-color anchor blend");
+                    const double expected=response[c]/mass[c];
+                    const double variance=sampleVariance*squareMass[c]/(count*mass[c]*mass[c]);
+                    const double error=std::abs(out[i].rgb[c]-expected);
+                    maximumError=std::max(maximumError,error);
+                    maximumVarianceError=std::max(maximumVarianceError,std::abs(out[i].variance[c]-variance));
+                    // FP32 exp, normalized weighted summation and division vs
+                    // independent double oracle; 3e-6 relative-or-absolute RGB,
+                    // 1e-9 + 3e-5 relative variance. No existing gate is changed.
+                    if(error>=3e-6*std::max(1.0,std::abs(expected)))std::cerr<<"impulse group="<<group<<" K="<<count<<" active="<<active<<" amplitude="<<amplitude<<" pixel="<<i<<" channel="<<c<<" actual="<<out[i].rgb[c]<<" expected="<<expected<<" blend="<<out[i].modelBlend[c]<<" phase="<<out[i].samplingDiversity[c]<<'\n';
+                    check(error<3e-6*std::max(1.0,std::abs(expected)),"RAW impulse matches normalized spatial kernel response");
+                    check(std::abs(out[i].variance[c]-variance)<1e-9+3e-5*variance,"RAW impulse has analytic independent-frame variance");
+                    check(out[i].modelBlend[c]==0 && out[i].samplingDiversity[c]<2e-5F,
+                        "identical impulse frames must not claim unobserved phase detail");
+                    if(c!=active)check(out[i].rgb[c]==0,"sensor impulse must not contaminate another spectral channel");
+                    if(std::abs(expected)>0.01) {observed=true;check(out[i].rgb[c]*amplitude>0,"impulse sign survives reconstruction");}
+                }
+            }
+            check(observed,"impulse tests must observe a nontrivial sensor response");
+        }
+    }
+    std::cout<<"joint-raw-impulse max_rgb_error="<<maximumError<<" max_variance_error="<<maximumVarianceError<<'\n';
+}
 void homogeneityAndSignedValues() {
     const Signal signal=[](float x,float y,std::size_t c){return -0.12F+0.25F*static_cast<float>(c)+0.08F*std::sin(x*0.7F+y*0.3F);};
     auto f=fixture(signal,cartesian(),1e-5F);
@@ -404,7 +475,7 @@ int main() {
         }
         probe.reset();
 #endif
-        srQuality();nativeGridPhaseEvidence();homogeneityAndSignedValues();phaseAndAxisControls();spatialNoiseDebias();for(unsigned mode=0;mode<3;++mode)conditionalNoise(mode);sparseColorBorders();runtimeTilingAndValidation();
+        srQuality();nativeGridPhaseEvidence();sensorImpulseResponse();homogeneityAndSignedValues();phaseAndAxisControls();spatialNoiseDebias();for(unsigned mode=0;mode<3;++mode)conditionalNoise(mode);sparseColorBorders();runtimeTilingAndValidation();
 #ifdef LATENT_JOINT_TEST_VULKAN
         std::cout<<"joint CPU/GPU max_scaled_signal_error="<<maxBackendError<<'\n';
 #endif
