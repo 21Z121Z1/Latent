@@ -28,6 +28,7 @@ import android.os.HandlerThread
 import android.os.PowerManager
 import android.os.Looper
 import android.os.SystemClock
+import android.os.storage.StorageManager
 import android.util.Size
 import java.io.File
 import java.io.FileOutputStream
@@ -38,6 +39,21 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
 import org.json.JSONArray
 import org.json.JSONObject
+
+/** Worker-thread volume admission, not an exclusive file reservation. Later I/O
+ * can still fail (other apps race for space); capture records that failure.
+ * StorageManager may reclaim cache to satisfy this explicit capture allocation.
+ */
+internal fun admitCaptureStorage(context: Context, directory: File, requiredBytes: Long): Long {
+    check(Looper.myLooper() != Looper.getMainLooper()) { "Storage admission must not block the main thread" }
+    require(directory.isDirectory && requiredBytes > 0)
+    val storage = context.getSystemService(StorageManager::class.java)
+    val volume = storage.getUuidForPath(directory)
+    val allocatable = storage.getAllocatableBytes(volume)
+    require(allocatable >= requiredBytes) { "Insufficient debug bundle disk space" }
+    storage.allocateBytes(volume, requiredBytes)
+    return allocatable
+}
 
 /** Opt-in developer backend. Raw-only session, one outstanding request, immediate
  * disk spooling: no burst of full-resolution Image leases or FP32 frames in RAM.
@@ -70,7 +86,7 @@ internal class HighResolutionCapture(private val context: Context) {
         check(!directory.exists() && directory.mkdirs()) { "Use a new capture bundle directory" }
         val manager = context.getSystemService(CameraManager::class.java)
         val c = manager.getCameraCharacteristics(o.cameraId)
-        val manifest = JSONObject().put("schema", 1).put("algorithm", "latent.direct-cfa.1")
+        val manifest = JSONObject().put("schema", 1)
             .put("deviceVerified", false).put("buildFingerprint", Build.FINGERPRINT)
             .put("probe", SensorMode.probe(o.cameraId, c)).put("frames", JSONArray())
         val manifestFile = File(directory, "capture.json")
@@ -93,7 +109,7 @@ internal class HighResolutionCapture(private val context: Context) {
                 else c.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP))
             require(map.getOutputSizes(ImageFormat.RAW_SENSOR)?.contains(o.size) == true) { "RAW size absent from selected pixel-mode map" }
             if (o.pixelMode == 1) require(c.availableCaptureRequestKeys.contains(CaptureRequest.SENSOR_PIXEL_MODE))
-            if (o.croppedRaw) require(c.get(CameraCharacteristics.SCALER_AVAILABLE_STREAM_USE_CASES)?.contains(CameraMetadata.SCALER_AVAILABLE_STREAM_USE_CASES_CROPPED_RAW) == true)
+            if (o.croppedRaw) require(c.get(CameraCharacteristics.SCALER_AVAILABLE_STREAM_USE_CASES)?.contains(CameraMetadata.SCALER_AVAILABLE_STREAM_USE_CASES_CROPPED_RAW.toLong()) == true)
             require(checkNotNull(c.get(CameraCharacteristics.SENSOR_INFO_EXPOSURE_TIME_RANGE)).contains(o.exposureNs))
             require(checkNotNull(c.get(CameraCharacteristics.SENSOR_INFO_SENSITIVITY_RANGE)).contains(o.iso))
             val memory = ActivityManager.MemoryInfo()
@@ -103,10 +119,12 @@ internal class HighResolutionCapture(private val context: Context) {
             // conservative admission, followed by measured PSS; not a zero-copy claim.
             require(!memory.lowMemory && rawBytes * 4 + o.reconstructionBudgetBytes < memory.availMem / 2) { "Insufficient capture + reconstruction headroom" }
             val diskBytes = rawBytes * o.frames * 2 + o.size.width.toLong() * o.size.height * 64 + if (o.dumpDng) rawBytes * o.frames else 0
-            require(directory.usableSpace > diskBytes + 64L * 1024 * 1024) { "Insufficient debug bundle disk space" }
+            val requiredDiskBytes = Math.addExact(diskBytes, 64L * 1024 * 1024)
+            val allocatableDiskBytes = admitCaptureStorage(context, directory, requiredDiskBytes)
             manifest.put("admission", JSONObject().put("availableRamBytes", memory.availMem)
                 .put("rawPlaneBytes", rawBytes).put("imageReaderMaxImages", 2).put("diskEstimateBytes", diskBytes)
-                .put("reconstructionBudgetBytes", o.reconstructionBudgetBytes))
+                .put("reconstructionBudgetBytes", o.reconstructionBudgetBytes)
+                .put("requestedDiskBytes", requiredDiskBytes).put("allocatableDiskBytesAtAdmission", allocatableDiskBytes))
             val rawReader = ImageReader.newInstance(o.size.width, o.size.height, ImageFormat.RAW_SENSOR, 2)
             reader = rawReader
             rawReader.setOnImageAvailableListener({ input ->
@@ -125,7 +143,7 @@ internal class HighResolutionCapture(private val context: Context) {
             camera = device
             val output = OutputConfiguration(rawReader.surface)
             if (Build.VERSION.SDK_INT >= 31) output.addSensorPixelModeUsed(o.pixelMode)
-            if (o.croppedRaw) output.streamUseCase = CameraMetadata.SCALER_AVAILABLE_STREAM_USE_CASES_CROPPED_RAW
+            if (o.croppedRaw) output.streamUseCase = CameraMetadata.SCALER_AVAILABLE_STREAM_USE_CASES_CROPPED_RAW.toLong()
             val configured = CompletableFuture<CameraCaptureSession>()
             device.createCaptureSession(SessionConfiguration(SessionConfiguration.SESSION_REGULAR, listOf(output), executor,
                 object : CameraCaptureSession.StateCallback() {
@@ -224,7 +242,9 @@ internal class HighResolutionCapture(private val context: Context) {
             manifest.put("thermalStatus", thermal).put("powerSaveMode", power.isPowerSaveMode)
             val report = NativeBridge.reconstructRawFiles(raws.toTypedArray(), modes.toTypedArray(), paths.toTypedArray(),
                 File(directory, "reconstruction.lrgb").absolutePath, o.preferVulkan, o.reconstructionBudgetBytes, severity)
-            manifest.put("reconstruction", JSONObject(report)).put("status", "software-pipeline-completed-device-quality-review-required")
+            val reconstruction = JSONObject(report)
+            manifest.put("algorithm", reconstruction.getJSONObject("trace").getString("algorithm"))
+            manifest.put("reconstruction", reconstruction).put("status", "software-pipeline-completed-device-quality-review-required")
             return manifest
         } catch (e: Exception) { manifest.put("status", "failed-closed").put("error", e.toString()); throw e }
         finally {

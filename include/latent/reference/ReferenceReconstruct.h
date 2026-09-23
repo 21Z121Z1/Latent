@@ -40,6 +40,12 @@ struct ReconstructionConfig {
     float whiteBalanceConfidence = 0.0F;
 };
 
+// Canonical post-white-balance camera-to-AP1/D60 transform. Both demosaic
+// finishing and direct camera-linear reconstruction resolve color here.
+[[nodiscard]] imaging::Matrix3f cameraToSceneMatrix(const ReconstructionConfig& config);
+// A scene coordinate must have a finite, strictly positive FP32 scale.
+[[nodiscard]] float sceneCoordinateScale(float sceneScaleEV);
+
 [[nodiscard]] imaging::SceneFrame reconstructSingleRaw(
     const imaging::RawFrame& raw,
     const ReconstructionConfig& config);

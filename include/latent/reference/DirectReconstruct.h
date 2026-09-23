@@ -2,6 +2,7 @@
 
 #include "latent/imaging/RawFrame.h"
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <span>
@@ -14,15 +15,32 @@ struct MosaicEvidence {
     float value = 0, variance = 0;
     std::uint32_t channel = 0, valid = 0;
 };
-struct ReconstructionWarp { float x = 0, y = 0, confidence = 0, reserved = 0; };
+struct ReconstructionWarp {
+    float x = 0, y = 0, confidence = 0, reserved = 0;
+    // Inverse local geometric Jacobian, row-major. Sample offsets are fitted in
+    // reference photosite coordinates, not in each source frame's coordinates.
+    std::array<float,4> sourceToReference{1,0,0,1};
+};
+inline constexpr std::size_t kReconstructionBasis = 6;
+inline constexpr std::size_t kReconstructionMoments = 21;
 struct ReconstructionAnchor {
     std::array<float,4> mean{}, noise{}, spatial{};
     // inverse kernel covariance xx,xy,yy; fourth lane reserved
     std::array<float,4> precision{1,0,1,0};
+    std::array<float,4> referenceWarp{}; // xy phase origin; remaining lanes reserved
 };
 struct ReconstructionAccumulator {
-    std::array<float,4> value{}, weight{}, variance{}, frameWeightSquared{};
-    std::array<float,4> nearWeight{}, referenceWeight{};
+    // Lower-triangular symmetric matrices, row-major: index i*(i+1)/2+j.
+    // The zeroth moments ARE the legacy Gaussian estimate; no duplicate sums.
+    std::array<std::array<float,4>,kReconstructionBasis> signal{};
+    std::array<std::array<float,4>,kReconstructionMoments> gram{}, noiseGram{}, noiseBoundGram{}, frameRoot{};
+    std::array<std::array<float,4>,kReconstructionBasis> referenceMoments{};
+    // frameRoot packs an upper-triangular QR factor (R[row,column] at
+    // column*(column+1)/2+row), avoiding cancellation in signed frame leverage.
+    // Weighted circular moments at x, y, x+y, x-y (one cycle/photosite).
+    std::array<std::array<float,4>,4> phaseCos{}, phaseSin{};
+    // RGB support; fourth lane reserved.
+    std::array<float,4> nearWeight{};
 };
 // Sensor-reference normalized, green-balanced camera RGB, NOT an AP1 SceneFrame.
 // If reference COLOR_CORRECTION_GAINS is provided, G0/G1 are multiplied by
@@ -32,15 +50,32 @@ struct ReconstructionAccumulator {
 // that zero-filled missing samples are measured black.
 struct ReconstructedPixel {
     std::array<float,4> rgb{}, variance{}, effectiveFrames{}, confidence{};
+    // Observed phase diversity is a conservative geometric diagnostic, NOT a
+    // calibrated resolution/quality probability. modelBlend is the actual fit
+    // contribution after conditioning, SNR, phase and support gates.
+    std::array<float,4> samplingDiversity{}, modelBlend{};
 };
-static_assert(sizeof(MosaicEvidence)==16 && sizeof(ReconstructionWarp)==16);
-static_assert(sizeof(ReconstructionAnchor)==64 && sizeof(ReconstructionAccumulator)==96 && sizeof(ReconstructedPixel)==64);
+static_assert(sizeof(MosaicEvidence)==16 && sizeof(ReconstructionWarp)==32);
+static_assert(sizeof(ReconstructionAnchor)==80 && sizeof(ReconstructionAccumulator)==1680 && sizeof(ReconstructedPixel)==96);
 struct DirectKernelPolicy {
     float detailSigma = 0.7F;
     float residualCutoff = 4.0F;
     float aliasAllowance = 0.15F;
-    float varianceFloor = 1.0e-8F;
+    // Dimensionless noise regularizer relative to local evidence amplitude^2.
+    // Unlike an absolute sensor-unit floor, this preserves intensity scaling.
+    float relativeVarianceFloor = 1.0e-8F;
     float minimumConfidence = 0.15F;
+    // Explicit delegated estimator policy; zero gives the Gaussian ablation.
+    float quadraticStrength = 1.0F;
+    float fitRegularization = 1.0e-3F;
+    // Bound normalized prediction leverage; taper ill-supported extrapolation
+    // before trusting a polynomial at cropped borders or sparse color support.
+    float maximumFitLeverage = 16.0F;
+    // Opt-in high-detail policy for well-registered, phase-diverse bursts.
+    // Output-grid scale remains an independent, explicit runtime request.
+    [[nodiscard]] static DirectKernelPolicy superResolution() {
+        DirectKernelPolicy p;p.detailSigma=0.5F;p.aliasAllowance=1.0F;return p;
+    }
 };
 struct DirectKernelGeometry {
     imaging::SensorRect sourceTile{};
@@ -60,7 +95,7 @@ void accumulateDirectReconstruction(std::span<const MosaicEvidence>, std::span<c
     std::span<const ReconstructionAnchor>, const DirectKernelGeometry&, const DirectKernelPolicy&,
     std::span<ReconstructionAccumulator>);
 void finishDirectReconstruction(std::span<const ReconstructionAnchor>, std::span<const ReconstructionAccumulator>,
-    std::span<ReconstructedPixel>);
+    std::span<ReconstructedPixel>, const DirectKernelPolicy& = {});
 
 // One arena per execution, reused for every output tile. The reference
 // implementation is allocation-free inside the kernels. Backends keep all

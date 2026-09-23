@@ -25,6 +25,10 @@ reference::ReconstructionWarp warpAt(const ReconstructionMotion& m,float x,float
     reference::ReconstructionWarp w{};
     w.x=m.affine[0]*x+m.affine[1]*y+m.affine[2]+m.rowDx*(y/static_cast<float>(std::max(1U,e.height-1U))-0.5F);
     w.y=m.affine[3]*x+m.affine[4]*y+m.affine[5]+m.rowDy*(y/static_cast<float>(std::max(1U,e.height-1U))-0.5F);
+    const float rowScale=1/static_cast<float>(std::max(1U,e.height-1U));
+    const float a=m.affine[0],b=m.affine[1]+m.rowDx*rowScale;
+    const float c=m.affine[3],d=m.affine[4]+m.rowDy*rowScale,det=a*d-b*c;
+    w.sourceToReference={d/det,-b/det,-c/det,a/det};
     w.confidence=m.confidence;
     if(m.tileSize) {
         const auto tx=std::min(m.columns-1,static_cast<std::uint32_t>(std::max(x,0.0F))/m.tileSize);
@@ -38,7 +42,8 @@ void validateMotion(const ReconstructionMotion& m,imaging::Extent e) {
     for(float a:m.affine)if(!std::isfinite(a))throw std::invalid_argument("non-finite affine motion");
     if(!std::isfinite(m.rowDx)||!std::isfinite(m.rowDy)||!std::isfinite(m.confidence)||m.confidence<0||m.confidence>1)
         throw std::invalid_argument("invalid row motion/confidence");
-    const float det=m.affine[0]*m.affine[4]-m.affine[1]*m.affine[3];
+    const float rowScale=1/static_cast<float>(std::max(1U,e.height-1U));
+    const float det=m.affine[0]*(m.affine[4]+m.rowDy*rowScale)-(m.affine[1]+m.rowDx*rowScale)*m.affine[3];
     if(det<0.25F||det>4)throw std::invalid_argument("singular or excessive motion scale");
     if(m.tileSize) {
         if(m.tileSize>4096||m.columns!=ceilDiv(e.width,m.tileSize)||m.rows!=ceilDiv(e.height,m.tileSize)||
@@ -84,7 +89,7 @@ TiledReconstructionPlan planTiledReconstruction(const imaging::RawBurst& b,const
     reference::validateDirectKernelPolicy(p.kernel);
     if(b.extent.width>1000000||b.extent.height>1000000||p.maximumFrames==0||p.maximumFrames>32||
         p.tileSize<16||p.tileSize>512||p.maximumDisplacement>1024||p.guideBudgetBytes<65536||
-        !std::isfinite(p.missingNoiseVariance)||p.missingNoiseVariance<p.kernel.varianceFloor||p.missingNoiseVariance>1||
+        !std::isfinite(p.missingNoiseVariance)||p.missingNoiseVariance<=0||p.missingNoiseVariance>1||
         caps.thermalSeverity>2)throw std::invalid_argument("invalid tiled reconstruction policy");
     if(!grid.extent.width||!grid.extent.height||grid.extent.width>1000000||grid.extent.height>1000000||
         !std::isfinite(grid.originX)||!std::isfinite(grid.originY)||grid.originX<0||grid.originY<0||
@@ -122,9 +127,12 @@ TiledReconstructionPlan planTiledReconstruction(const imaging::RawBurst& b,const
         const auto motion=static_cast<std::uint64_t>(ceilDiv(b.extent.width,256))*ceilDiv(b.extent.height,256)*16*plan.frames;
         // Coherent GPU buffers can consume the same mobile RAM. Charge both
         // CPU arenas and GPU allocations conservatively, not just C++ heap.
-        plan.hostWorkingBytes=src*18U+n*240U+guideBytes()+motion+1048576;
-        plan.deviceWorkingBytes=plan.vulkan?(src*16+n*240):0;
-        const auto largest=std::max(src*16,n*160);
+        constexpr auto stateBytes=sizeof(reference::ReconstructionAnchor)+sizeof(reference::ReconstructionAccumulator);
+        constexpr auto pixelBytes=stateBytes+sizeof(reference::ReconstructionWarp)+sizeof(reference::ReconstructedPixel);
+        plan.hostWorkingBytes=src*(sizeof(std::uint16_t)+sizeof(reference::MosaicEvidence))+
+            n*pixelBytes+guideBytes()+motion+1048576;
+        plan.deviceWorkingBytes=plan.vulkan?(src*sizeof(reference::MosaicEvidence)+n*pixelBytes):0;
+        const auto largest=std::max(src*sizeof(reference::MosaicEvidence),n*stateBytes);
         const bool hostFits=resident<=caps.hostBudgetBytes && sinkResident<=caps.hostBudgetBytes-resident &&
             plan.hostWorkingBytes<=caps.hostBudgetBytes-resident-sinkResident;
         const bool deviceFits=!plan.vulkan || (plan.deviceWorkingBytes<=caps.deviceBudgetBytes&&largest<=caps.maxStorageBufferRange);
@@ -143,8 +151,12 @@ DirectReconstructionTrace reconstructRawTiles(const imaging::RawBurst& b,RawTile
     ReconstructionTileSink& sink,std::span<const ReconstructionMotion> supplied,std::optional<imaging::FrameId> requested,
     std::function<bool()> cancel) {
     const auto start=Clock::now();checkpoint(cancel);
-    DirectReconstructionTrace trace{};trace.plan=planTiledReconstruction(b,grid,p,caps,source.residentBytes(),sink.residentBytes());
+    DirectReconstructionTrace trace{};trace.grid=grid;trace.kernel=p.kernel;trace.plan=planTiledReconstruction(b,grid,p,caps,source.residentBytes(),sink.residentBytes());
     const auto& plan=trace.plan;const auto s=sampling(b);
+    if(plan.frames==1 && trace.kernel.quadraticStrength>0) {
+        trace.kernel.quadraticStrength=0;
+        trace.plan.decisions.emplace_back("single_frame_gaussian_specialization_no_sr_evidence");
+    }
     if(!supplied.empty()) {
         // Charge caller-owned observations AND the copy retained in the trace.
         // Refuse dense fields before copying; a tile planner must not hide O(N) flow.
@@ -174,11 +186,11 @@ DirectReconstructionTrace reconstructRawTiles(const imaging::RawBurst& b,RawTile
 #ifdef LATENT_ENABLE_VULKAN_RUNTIME
     if(plan.vulkan) {
         std::string detail;
-        executor=vulkan::makeVulkanDirectExecutor(maxSource,maxOutput,p.kernel,&detail,caps.collectGpuTimings);
+        executor=vulkan::makeVulkanDirectExecutor(maxSource,maxOutput,trace.kernel,&detail,caps.collectGpuTimings);
         if(!executor){trace.plan.vulkan=false;trace.plan.deviceWorkingBytes=0;trace.plan.decisions.emplace_back("vulkan_unavailable_cpu_fallback:"+detail);}
     }
 #endif
-    if(!executor){executor=reference::makeReferenceDirectExecutor(maxOutput,p.kernel);trace.arenaAllocations+=2;}
+    if(!executor){executor=reference::makeReferenceDirectExecutor(maxOutput,trace.kernel);trace.arenaAllocations+=2;}
     else {
         trace.arenaAllocations+=4;
         const auto actual=executor->deviceBytes();
@@ -301,7 +313,17 @@ DirectReconstructionTrace reconstructRawTiles(const imaging::RawBurst& b,RawTile
         if(mapped)trace.mappedAccessBytes+=count*sizeof(reference::ReconstructedPixel);
         for(std::size_t i=0;i<count;++i)for(std::size_t c=0;c<3;++c) {
             const auto& v=output[i];
-            if(!std::isfinite(v.rgb[c])||!std::isfinite(v.variance[c]))throw std::runtime_error("non-finite reconstruction result");
+            if(!std::isfinite(v.rgb[c])||!std::isfinite(v.variance[c])||!std::isfinite(v.effectiveFrames[c])||
+                !std::isfinite(v.confidence[c])||!std::isfinite(v.samplingDiversity[c])||!std::isfinite(v.modelBlend[c])) {
+                std::ostringstream error;
+                error << "non-finite reconstruction result at (" << dst.x+i%dst.width << ',' << dst.y+i/dst.width
+                      << ") channel " << c << ": rgb=" << v.rgb[c] << " variance=" << v.variance[c]
+                      << " effectiveFrames=" << v.effectiveFrames[c] << " confidence=" << v.confidence[c]
+                      << " phase=" << v.samplingDiversity[c] << " model=" << v.modelBlend[c];
+                throw std::runtime_error(error.str());
+            }
+            trace.meanSamplingDiversity+=v.samplingDiversity[c];trace.meanModelBlend+=v.modelBlend[c];
+            if(v.modelBlend[c]>0)++trace.jointFitChannels;
             trace.meanEffectiveFrames+=v.effectiveFrames[c];trace.meanConfidence+=v.confidence[c];trace.meanVariance+=v.variance[c];
             if(v.confidence[c]==0)++trace.invalidChannels;
             if(v.confidence[c]==0.01F)++trace.referenceFallbackChannels;
@@ -309,6 +331,8 @@ DirectReconstructionTrace reconstructRawTiles(const imaging::RawBurst& b,RawTile
         sink.write(dst,std::span(output).first(count));++trace.tiles;trace.outputPixels+=count;
     }
     trace.reconstructionMilliseconds=ms(reconstructionStart);trace.totalMilliseconds=ms(start);
+    trace.meanSamplingDiversity/=static_cast<double>(trace.outputPixels)*3;
+    trace.meanModelBlend/=static_cast<double>(trace.outputPixels)*3;
     trace.meanEffectiveFrames/=static_cast<double>(trace.outputPixels)*3;
     trace.meanConfidence/=static_cast<double>(trace.outputPixels)*3;trace.meanVariance/=static_cast<double>(trace.outputPixels)*3;
     trace.transferBytes=executor->transferBytes();trace.gpuMilliseconds=executor->gpuMilliseconds();
@@ -317,7 +341,7 @@ DirectReconstructionTrace reconstructRawTiles(const imaging::RawBurst& b,RawTile
 }
 std::string directReconstructionJson(const DirectReconstructionTrace& t) {
     std::ostringstream o;o << std::setprecision(12);
-    o << "{\"algorithm\":\"" << kDirectReconstructionVersion << "\",\"reference\":" << t.reference.value
+    o << "{\"schema\":2,\"algorithm\":\"" << kDirectReconstructionVersion << "\",\"reference\":" << t.reference.value
       << ",\"tile_size\":" << t.plan.tileSize << ",\"guide_step\":" << t.plan.guideStep << ",\"frames\":" << t.plan.frames
       << ",\"halo\":[" << t.plan.radiusX << ',' << t.plan.radiusY << "],\"host_arena_bound\":" << t.plan.hostWorkingBytes
       << ",\"sink_resident_bytes\":" << t.plan.sinkResidentBytes
@@ -326,6 +350,13 @@ std::string directReconstructionJson(const DirectReconstructionTrace& t) {
       << ",\"raw_bytes_read\":" << t.rawBytesRead << ",\"transfer_bytes\":" << t.transferBytes << ",\"mapped_access_bytes\":" << t.mappedAccessBytes << ",\"tiles\":" << t.tiles
       << ",\"output_pixels\":" << t.outputPixels << ",\"invalid_channels\":" << t.invalidChannels
       << ",\"reference_fallback_channels\":" << t.referenceFallbackChannels << ",\"mean_effective_frames\":" << t.meanEffectiveFrames
+      << ",\"joint_fit_channels\":" << t.jointFitChannels << ",\"mean_sampling_diversity\":" << t.meanSamplingDiversity
+      << ",\"mean_model_blend\":" << t.meanModelBlend
+      << ",\"grid\":[" << t.grid.extent.width << ',' << t.grid.extent.height << ',' << t.grid.originX << ',' << t.grid.originY << ',' << t.grid.stepX << ',' << t.grid.stepY << ']'
+      << ",\"kernel\":{\"detail_sigma\":" << t.kernel.detailSigma << ",\"residual_cutoff\":" << t.kernel.residualCutoff
+      << ",\"alias_allowance\":" << t.kernel.aliasAllowance << ",\"relative_variance_floor\":" << t.kernel.relativeVarianceFloor
+      << ",\"minimum_confidence\":" << t.kernel.minimumConfidence << ",\"quadratic_strength\":" << t.kernel.quadraticStrength
+      << ",\"fit_regularization\":" << t.kernel.fitRegularization << ",\"maximum_fit_leverage\":" << t.kernel.maximumFitLeverage << '}'
       << ",\"mean_confidence\":" << t.meanConfidence << ",\"mean_variance\":" << t.meanVariance
       << ",\"guide_ms\":" << t.guideMilliseconds << ",\"alignment_ms\":" << t.alignmentMilliseconds
       << ",\"reconstruction_ms\":" << t.reconstructionMilliseconds << ",\"total_ms\":" << t.totalMilliseconds << ",\"gpu_ms\":";
