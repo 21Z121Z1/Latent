@@ -5,28 +5,42 @@ on:
 permissions:
   contents: read
 jobs:
-  snapshot:
+  import:
+    if: contains(github.event.head_commit.message, '[import]')
+    permissions:
+      contents: write
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
-          ref: 19163a2726cf388e1af309973e2a6c9c6396df9f
-          persist-credentials: false
           fetch-depth: 0
-      - name: Package exact tracked source and pinned build dependencies
+      - name: Apply authored patch to pinned parent on isolated delivery branch
         shell: bash
         run: |
           set -euo pipefail
+          cp review.patch "$RUNNER_TEMP/review.patch"
+          cp review.json "$RUNNER_TEMP/review.json"
+          parent=$(python3 -c 'import json; print(json.load(open("review.json"))["parent"])')
+          git cat-file -e "$parent^{commit}"
+          git checkout --detach "$parent"
+          git apply --check "$RUNNER_TEMP/review.patch"
+          git apply --index "$RUNNER_TEMP/review.patch"
+          expected=$(python3 -c 'import json; print(json.load(open(__import__("os").environ["RUNNER_TEMP"]+"/review.json")).get("tree", ""))')
+          if [ -n "$expected" ]; then test "$(git write-tree)" = "$expected"; fi
+          git diff --cached --check
+          git diff --cached --stat
+          git config user.name 'Latent reconstruction engineering'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          python3 -c 'import json,os; print(json.load(open(os.environ["RUNNER_TEMP"]+"/review.json"))["message"])' > "$RUNNER_TEMP/message.txt"
+          git commit -F "$RUNNER_TEMP/message.txt"
+          git push origin "HEAD:refs/heads/automation/joint-raw-reviewed-$GITHUB_RUN_ID"
           mkdir -p transport
+          git rev-parse HEAD HEAD^{tree} | tee transport/source-identity.txt
           git bundle create transport/latent.bundle HEAD
-          cmake -S . -B build-transport -DLATENT_BUILD_TESTS=OFF -DCMAKE_BUILD_TYPE=Release
-          tar --exclude=.git -czf transport/dependencies.tar.gz -C build-transport/_deps vulkan_headers-src volk-src glslang-src
-          git rev-parse HEAD HEAD^{tree} > transport/source-identity.txt
-          sha256sum transport/latent.bundle transport/dependencies.tar.gz > transport/SHA256SUMS
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: joint-raw-review-source-19163a2
+          name: joint-raw-reviewed-${{ github.run_id }}
           path: transport/
           if-no-files-found: error
           retention-days: 3
