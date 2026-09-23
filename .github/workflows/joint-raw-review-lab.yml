@@ -1,0 +1,32 @@
+name: joint-raw-review-lab
+on:
+  push:
+    branches: [automation/joint-raw-review-20260923]
+permissions:
+  contents: read
+jobs:
+  snapshot:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: 19163a2726cf388e1af309973e2a6c9c6396df9f
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Package exact tracked source and pinned build dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p transport
+          git bundle create transport/latent.bundle HEAD
+          cmake -S . -B build-transport -DLATENT_BUILD_TESTS=OFF -DCMAKE_BUILD_TYPE=Release
+          tar --exclude=.git -czf transport/dependencies.tar.gz -C build-transport/_deps vulkan_headers-src volk-src glslang-src
+          git rev-parse HEAD HEAD^{tree} > transport/source-identity.txt
+          sha256sum transport/latent.bundle transport/dependencies.tar.gz > transport/SHA256SUMS
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: joint-raw-review-source-19163a2
+          path: transport/
+          if-no-files-found: error
+          retention-days: 3
