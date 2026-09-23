@@ -269,6 +269,18 @@ conditional variance, QR frame support and mixed/correlated bounds. Seeded
 CPU oracle and the actual Vulkan executor; it must not fall back in required-GPU
 CI. Existing exhaustive grouped-CFA CPU/Vulkan checks retain their original
 RGB/variance/frame/confidence tolerances and add phase/model comparisons.
+A separate known-geometry comparison exercises the actual retained
+`makeReferenceFusionSession -> finishTemporalFusion -> Malvar demosaic` route,
+then explicitly bilinearly samples that native RGB at the SAME output grid.
+It uses 16 known half-pixel Cartesian shifts and 12 independent R/G/B horizontal
+and vertical stripe targets at 0.35/0.60 cycles per RAW photosite. To avoid a
+motion-rejection straw man, this diagnostic gives legacy fusion a permissive
+100-sigma cutoff and 1e-4 variance floor; every evaluated tap must retain effective
+support above 15 frames. The test gates lower joint MSE against aperture-integrated
+truth and unchanged flat spectral axes, and logs both errors. This measures
+phase-preserving reconstruction versus actual native-grid collapse, not merely
+versus the direct estimator's Gaussian ablation. It does not claim universal
+real-camera quality or recommend those diagnostic fusion settings for capture.
 `latent_joint_scene_tests` and its required-real-Vulkan variant prove the complete
 RAW -> camera RGB -> scene -> SDR/HDR composition. They cover all four Bayer
 orders, group sizes 1 through 4 with nonzero origins, 1x/2x grids, fractional

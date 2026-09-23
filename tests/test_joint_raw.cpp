@@ -1,4 +1,5 @@
 #include "latent/reference/DirectReconstruct.h"
+#include "latent/reference/TemporalReconstruct.h"
 #include "latent/testing/SyntheticRaw.h"
 #ifdef LATENT_JOINT_TEST_VULKAN
 #include "latent/vulkan/DirectReconstruction.h"
@@ -118,6 +119,77 @@ void srQuality() {
         check(mse(f,joint,signal)<mse(f,one,signal),"joint SR must beat a single RAW reconstructed on the SAME grid");
     }
     std::cout<<"joint-sr worst_mse_ratio="<<worstRatio<<'\n';
+}
+// Exercise the actual retained native-grid fusion and demosaic implementation,
+// not a reimplementation of its sampler. Exact geometry and a permissive robust
+// cutoff keep valid phase changes from becoming a motion-rejection straw man.
+std::vector<ReconstructedPixel> nativeGridBaseline(const Fixture& f) {
+    reference::NormalizedRaw ref{}; ref.extent=f.source;
+    bool matched=false;
+    for(unsigned pattern=0;pattern<4;++pattern) {
+        const auto cfa=static_cast<imaging::CfaPattern>(pattern);bool same=true;
+        for(std::uint32_t y=0;y<2;++y)for(std::uint32_t x=0;x<2;++x) {
+            const auto actual=static_cast<imaging::CfaChannel>(f.frames[0].raw[static_cast<std::size_t>(y)*f.source.width+x].channel);
+            same= same && reference::rgbChannelIndex(imaging::cfaChannelAt(cfa,x,y))==reference::rgbChannelIndex(actual);
+        }
+        if(same){ref.cfa=cfa;matched=true;break;}
+    }
+    check(matched,"legacy comparator requires a regular Bayer spectral layout");
+    const auto copySamples=[](reference::NormalizedRaw& n,const Frame& frame) {
+        n.samples.clear();n.samples.reserve(frame.raw.size());
+        for(const auto& sample:frame.raw)n.samples.push_back({sample.value,sample.variance,static_cast<float>(sample.valid),1});
+    };
+    copySamples(ref,f.frames.front());
+    reference::TemporalPolicy policy{};policy.residualCutoffSigma=100;
+    policy.varianceFloor=1e-4F;policy.missingNoiseVariance=1e-4F;
+    auto session=reference::makeReferenceFusionSession(ref,policy);
+    for(std::size_t i=0;i<f.frames.size();++i) {
+        auto source=ref;copySamples(source,f.frames[i]);
+        reference::AlignmentField field{};field.source=imaging::FrameId{i+1};field.reference=imaging::FrameId{1};
+        field.extent=f.source;field.tileSize=policy.tileSize;
+        field.columns=(f.source.width+field.tileSize-1)/field.tileSize;
+        field.rows=(f.source.height+field.tileSize-1)/field.tileSize;
+        field.tiles.assign(static_cast<std::size_t>(field.columns)*field.rows,
+            {f.frames[i].warps[0].x-f.originX,f.frames[i].warps[0].y-f.originY,1,0});
+        (void)session->add(source,field,i==0);
+    }
+    const auto fused=reference::finishTemporalFusion(ref,session->finish(),{});
+    const auto rgb=reference::demosaicSensorLinear(fused.sensor,{1,1,1,1},reference::DemosaicMethod::MalvarHeCutler2004);
+    std::vector<ReconstructedPixel> out(static_cast<std::size_t>(f.output.pixelCount()));
+    for(std::uint32_t y=0;y<f.output.height;++y)for(std::uint32_t x=0;x<f.output.width;++x) {
+        const float rx=f.originX+static_cast<float>(x)*f.step,ry=f.originY+static_cast<float>(y)*f.step;
+        const auto ix=static_cast<std::uint32_t>(rx),iy=static_cast<std::uint32_t>(ry);
+        const float tx=rx-static_cast<float>(ix),ty=ry-static_cast<float>(iy);
+        // Baseline only: explicit bilinear display-grid resampling after the
+        // native CFA evidence has already collapsed. Joint never calls this.
+        for(std::uint32_t j=0;j<2;++j)for(std::uint32_t k=0;k<2;++k) {
+            const float w=(k?tx:1-tx)*(j?ty:1-ty);
+            const auto index=static_cast<std::size_t>(iy+j)*f.source.width+ix+k;
+            check(fused.uncertainty.effectiveSampleCount[index]>15,
+                "legacy comparison must retain almost all 16 phase frames, not fall back to reference");
+            for(std::size_t c=0;c<3;++c)out[static_cast<std::size_t>(y)*f.output.width+x].rgb[c]+=w*rgb.rgb[index*3+c];
+        }
+    }
+    return out;
+}
+void nativeGridPhaseEvidence() {
+    double worstRatio=0;
+    for(float frequency:{0.35F,0.60F})for(unsigned axis=0;axis<2;++axis)for(std::size_t active=0;active<3;++active) {
+        const Signal signal=[=](float x,float y,std::size_t c) {
+            return 0.3F+0.1F*static_cast<float>(c)+(c==active?0.1F*std::sin(2*pi*frequency*(axis?y:x)):0.0F);
+        };
+        const auto f=fixture(signal,cartesian());
+        const auto joint=reconstruct(f,reference::DirectKernelPolicy::superResolution());
+        const auto collapsed=nativeGridBaseline(f);
+        const double jointError=mse(f,joint,signal),collapsedError=mse(f,collapsed,signal);
+        const double ratio=jointError/collapsedError;worstRatio=std::max(worstRatio,ratio);
+        std::cout<<"joint-vs-native frequency="<<frequency<<" axis="<<axis<<" color="<<active
+            <<" joint_mse="<<jointError<<" fused_demosaic_upscale_mse="<<collapsedError<<" ratio="<<ratio<<'\n';
+        check(jointError<collapsedError,"fractional RAW evidence must beat actual native FusedRaw collapse on independent color stripes");
+        for(const auto& pixel:joint)for(std::size_t c=0;c<3;++c)if(c!=active)
+            check(std::abs(pixel.rgb[c]-(0.3F+0.1F*static_cast<float>(c)))<2e-5F,"independent color stripe must not contaminate flat spectral axes");
+    }
+    std::cout<<"joint-vs-native worst_mse_ratio="<<worstRatio<<'\n';
 }
 void homogeneityAndSignedValues() {
     const Signal signal=[](float x,float y,std::size_t c){return -0.12F+0.25F*static_cast<float>(c)+0.08F*std::sin(x*0.7F+y*0.3F);};
@@ -332,7 +404,7 @@ int main() {
         }
         probe.reset();
 #endif
-        srQuality();homogeneityAndSignedValues();phaseAndAxisControls();spatialNoiseDebias();for(unsigned mode=0;mode<3;++mode)conditionalNoise(mode);sparseColorBorders();runtimeTilingAndValidation();
+        srQuality();nativeGridPhaseEvidence();homogeneityAndSignedValues();phaseAndAxisControls();spatialNoiseDebias();for(unsigned mode=0;mode<3;++mode)conditionalNoise(mode);sparseColorBorders();runtimeTilingAndValidation();
 #ifdef LATENT_JOINT_TEST_VULKAN
         std::cout<<"joint CPU/GPU max_scaled_signal_error="<<maxBackendError<<'\n';
 #endif
