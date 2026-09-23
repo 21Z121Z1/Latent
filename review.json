@@ -1,1 +1,1 @@
-{"parent":"8c44d6ee2e89ed41f0bb03656340b101873ecc45","tree":"98a72ae2fe5b793aab3b7a8292976454af1dac2f","message":"fix(android): construct typed burst identities explicitly in file reconstruction JNI"}
+{"parent":"8f4cb27f8c8d37354f715007e389a3b2e5e56e57","tree":"c8c13d894a33b0b570c7293fb33ae44b2ae97908","message":"fix(android): admit capture storage through StorageManager with emulator coverage"}

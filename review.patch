@@ -1,13 +1,75 @@
-diff --git a/android/app/src/main/cpp/HighResolutionNative.cpp b/android/app/src/main/cpp/HighResolutionNative.cpp
-index 6530d93..aac2f8e 100644
---- a/android/app/src/main/cpp/HighResolutionNative.cpp
-+++ b/android/app/src/main/cpp/HighResolutionNative.cpp
-@@ -75,7 +75,7 @@ extern "C" JNIEXPORT jstring JNICALL Java_dev_latent_camera_NativeBridge_reconst
-         const auto count=e->GetArrayLength(inputs);
-         if(count<1||count>32||e->GetArrayLength(modes)!=count||e->GetArrayLength(paths)!=count||thermal<0||thermal>2)
-             throw std::invalid_argument("invalid file burst membership/thermal observation");
--        imaging::RawBurst burst{};burst.id={1};burst.sequence={1};burst.calibration={1};
-+        imaging::RawBurst burst{};burst.id=imaging::BurstId{1};burst.sequence=imaging::CaptureSequenceId{1};burst.calibration=imaging::CalibrationId{1};
-         std::vector<runtime::RawFileBinding> files;std::vector<ParsedRawInput> parsed;
-         for(jsize n=0;n<count;++n) {
-             LocalRef input(e,e->GetObjectArrayElement(inputs,n)),mode(e,e->GetObjectArrayElement(modes,n)),path(e,e->GetObjectArrayElement(paths,n));checkJava(e);
+diff --git a/android/app/src/androidTest/java/dev/latent/camera/HighResolutionTest.kt b/android/app/src/androidTest/java/dev/latent/camera/HighResolutionTest.kt
+index 2157bdb..82fb306 100644
+--- a/android/app/src/androidTest/java/dev/latent/camera/HighResolutionTest.kt
++++ b/android/app/src/androidTest/java/dev/latent/camera/HighResolutionTest.kt
+@@ -70,6 +70,21 @@ class HighResolutionTest {
+         } finally { directory.deleteRecursively() }
+     }
+ 
++    @Test fun storageAdmissionUsesActualPrivateVolume() {
++        val context = InstrumentationRegistry.getInstrumentation().targetContext
++        val directory = File(context.filesDir, "storage-admission-${System.nanoTime()}").apply { check(mkdirs()) }
++        try {
++            val requested = 1024L * 1024
++            assertTrue(admitCaptureStorage(context, directory, requested) >= requested)
++            var rejected = false
++            try { admitCaptureStorage(context, directory, Long.MAX_VALUE) } catch (_: IllegalArgumentException) { rejected = true }
++            assertTrue("Insufficient disk must fail before allocation", rejected)
++            rejected = false
++            try { admitCaptureStorage(context, directory, -1) } catch (_: IllegalArgumentException) { rejected = true }
++            assertTrue("Invalid admission size rejected", rejected)
++        } finally { directory.deleteRecursively() }
++    }
++
+     @Test fun unknownGroupingFailsClosed() {
+         val m = mode(2, 0, 32)
+         // JNI observation corruption is rejected before any reconstruction allocation.
+diff --git a/android/app/src/main/java/dev/latent/camera/HighResolutionCapture.kt b/android/app/src/main/java/dev/latent/camera/HighResolutionCapture.kt
+index 73127be..6e943ea 100644
+--- a/android/app/src/main/java/dev/latent/camera/HighResolutionCapture.kt
++++ b/android/app/src/main/java/dev/latent/camera/HighResolutionCapture.kt
+@@ -28,6 +28,7 @@ import android.os.HandlerThread
+ import android.os.PowerManager
+ import android.os.Looper
+ import android.os.SystemClock
++import android.os.storage.StorageManager
+ import android.util.Size
+ import java.io.File
+ import java.io.FileOutputStream
+@@ -39,6 +40,21 @@ import java.util.concurrent.atomic.AtomicReference
+ import org.json.JSONArray
+ import org.json.JSONObject
+ 
++/** Worker-thread volume admission, not an exclusive file reservation. Later I/O
++ * can still fail (other apps race for space); capture records that failure.
++ * StorageManager may reclaim cache to satisfy this explicit capture allocation.
++ */
++internal fun admitCaptureStorage(context: Context, directory: File, requiredBytes: Long): Long {
++    check(Looper.myLooper() != Looper.getMainLooper()) { "Storage admission must not block the main thread" }
++    require(directory.isDirectory && requiredBytes > 0)
++    val storage = context.getSystemService(StorageManager::class.java)
++    val volume = storage.getUuidForPath(directory)
++    val allocatable = storage.getAllocatableBytes(volume)
++    require(allocatable >= requiredBytes) { "Insufficient debug bundle disk space" }
++    storage.allocateBytes(volume, requiredBytes)
++    return allocatable
++}
++
+ /** Opt-in developer backend. Raw-only session, one outstanding request, immediate
+  * disk spooling: no burst of full-resolution Image leases or FP32 frames in RAM.
+  * Invoke off the main/camera callback thread. The normal camera must be closed.
+@@ -103,10 +119,12 @@ internal class HighResolutionCapture(private val context: Context) {
+             // conservative admission, followed by measured PSS; not a zero-copy claim.
+             require(!memory.lowMemory && rawBytes * 4 + o.reconstructionBudgetBytes < memory.availMem / 2) { "Insufficient capture + reconstruction headroom" }
+             val diskBytes = rawBytes * o.frames * 2 + o.size.width.toLong() * o.size.height * 64 + if (o.dumpDng) rawBytes * o.frames else 0
+-            require(directory.usableSpace > diskBytes + 64L * 1024 * 1024) { "Insufficient debug bundle disk space" }
++            val requiredDiskBytes = Math.addExact(diskBytes, 64L * 1024 * 1024)
++            val allocatableDiskBytes = admitCaptureStorage(context, directory, requiredDiskBytes)
+             manifest.put("admission", JSONObject().put("availableRamBytes", memory.availMem)
+                 .put("rawPlaneBytes", rawBytes).put("imageReaderMaxImages", 2).put("diskEstimateBytes", diskBytes)
+-                .put("reconstructionBudgetBytes", o.reconstructionBudgetBytes))
++                .put("reconstructionBudgetBytes", o.reconstructionBudgetBytes)
++                .put("requestedDiskBytes", requiredDiskBytes).put("allocatableDiskBytesAtAdmission", allocatableDiskBytes))
+             val rawReader = ImageReader.newInstance(o.size.width, o.size.height, ImageFormat.RAW_SENSOR, 2)
+             reader = rawReader
+             rawReader.setOnImageAvailableListener({ input ->
