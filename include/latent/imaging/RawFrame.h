@@ -1,5 +1,7 @@
 #pragma once
 
+#include "latent/imaging/SensorSampling.h"
+
 #include "latent/imaging/Types.h"
 
 #include <array>
@@ -9,20 +11,6 @@
 #include <vector>
 
 namespace latent::imaging {
-
-enum class CfaPattern : std::uint8_t {
-    RGGB,
-    GRBG,
-    GBRG,
-    BGGR,
-};
-
-enum class CfaChannel : std::uint8_t {
-    R = 0,
-    G0 = 1,
-    G1 = 2,
-    B = 3,
-};
 
 enum class MetadataSource : std::uint8_t {
     Unknown,
@@ -112,6 +100,8 @@ struct RawFrameMetadata {
     std::string sensorMode;
 
     CfaPattern cfa = CfaPattern::RGGB;
+    // Absent only for the pre-existing, explicitly regular-Bayer contract.
+    std::optional<SensorSampling> sampling;
 
     std::int64_t exposureTimeNs = 0;
     float sensitivityIso = 0.0F;
@@ -145,7 +135,6 @@ struct RawValidation {
     std::string message;
 };
 
-[[nodiscard]] CfaChannel cfaChannelAt(CfaPattern pattern, std::uint32_t x, std::uint32_t y) noexcept;
 [[nodiscard]] RawValidation validateRawMetadata(const RawFrameMetadata& metadata);
 [[nodiscard]] RawValidation validateRawFrame(const RawFrame& frame);
 [[nodiscard]] RawValidation validateLensShadingMap(const LensShadingMap& map);

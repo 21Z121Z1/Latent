@@ -57,6 +57,12 @@ struct NormalizedRaw {
 };
 
 // sourcePosition = referencePosition + displacement, in sensor pixels.
+// Low-resolution balanced RAW guide, in original buffer coordinates.
+struct AlignmentGuide {
+    imaging::Extent extent{};
+    std::uint32_t pixelStep = 1;
+    std::vector<TemporalSample> samples;
+};
 struct MotionTile {
     float dx = 0.0F, dy = 0.0F;
     float confidence = 0.0F;
@@ -64,6 +70,8 @@ struct MotionTile {
 };
 static_assert(sizeof(MotionTile) == 16U);
 enum class GeometryStatus : std::uint32_t { Reference, Estimated, Unobservable, Ambiguous, Inconsistent };
+// A fallback assumption is not an observed displacement or confidence.
+enum class GeometryPrior : std::uint32_t { None, Identity, Global };
 struct RegistrationEvidence {
     // Conditional linearized guide-noise scale, not an unconditional calibrated
     // displacement posterior. Includes a conservative cubic-stencil reuse factor.
@@ -71,6 +79,7 @@ struct RegistrationEvidence {
     float cycleErrorPixels = std::numeric_limits<float>::infinity();
     std::uint32_t supportedGuideSamples = 0;
     GeometryStatus status = GeometryStatus::Unobservable;
+    GeometryPrior prior = GeometryPrior::None;
 };
 struct AlignmentField {
     imaging::FrameId source{}, reference{};
@@ -115,6 +124,9 @@ void validateTemporalPolicy(const TemporalPolicy& policy);
 [[nodiscard]] ReferenceSelection selectBurstReference(
     const imaging::RawBurst& burst, const runtime::HostRawBindings& bindings,
     const TemporalPolicy& policy, std::optional<imaging::FrameId> requested = {});
+[[nodiscard]] AlignmentField alignRawGuides(const AlignmentGuide&, const AlignmentGuide&,
+    imaging::Extent rawExtent, imaging::FrameId referenceId, imaging::FrameId sourceId,
+    const TemporalPolicy&);
 [[nodiscard]] AlignmentField alignTemporalRaw(
     const NormalizedRaw& reference, const NormalizedRaw& source,
     imaging::FrameId referenceId, imaging::FrameId sourceId,

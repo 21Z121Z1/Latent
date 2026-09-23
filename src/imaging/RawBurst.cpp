@@ -30,8 +30,13 @@ BurstValidation validateRawBurst(const RawBurst& burst) {
             return {BurstValidationCode::InvalidTimestamp, member.id, "sensor timestamps must be positive and strictly increasing"};
         }
         previous = metadata.sensorTimestampNs;
-        if (metadata.cameraId != first.cameraId || metadata.sensorMode != first.sensorMode || metadata.cfa != first.cfa) {
+        if (metadata.cameraId != first.cameraId || metadata.sensorMode != first.sensorMode || metadata.cfa != first.cfa ||
+            metadata.sampling != first.sampling) {
             return {BurstValidationCode::CalibrationMismatch, member.id, "first-generation burst members must share camera, sensor mode, and CFA"};
+        }
+        if (metadata.sampling) {
+            const auto sampling = validateSampling(*metadata.sampling, burst.extent);
+            if (!sampling.valid) return {BurstValidationCode::InvalidMetadata, member.id, sampling.message};
         }
         const auto check = validateRawMetadata(metadata);
         if (!check.valid) return {BurstValidationCode::InvalidMetadata, member.id, check.message};

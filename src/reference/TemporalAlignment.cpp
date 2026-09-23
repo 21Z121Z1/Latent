@@ -28,8 +28,10 @@ Proxy proxy(const NormalizedRaw& raw) {
             // Equal R/G0/G1/B cell aggregation: execution-only intensity proxy.
             d.value += s.value; d.variance += s.variance; count += 1.0F;
         }
-        d.usable = count > 0 ? 1.0F : 0.0F;
-        if (count > 0) { d.value /= count; d.variance /= count * count; }
+        // A partial cell changes the guide's spectral mixture between frames.
+        // Clipped, defective and incomplete edge cells cannot supply geometry.
+        d.usable = count == 4.0F ? 1.0F : 0.0F;
+        if (d.usable != 0) { d.value *= 0.25F; d.variance *= 0.0625F; }
     }
     return p;
 }
@@ -150,7 +152,8 @@ struct Linearization {
     std::uint32_t count = 0;
 };
 Linearization linearize(const Proxy& ref, const Proxy& src, Window window,
-                        float dx, float dy, float floor) {
+                        float dx, float dy, float floor,
+                        std::optional<std::array<float, 2>> commonWith = {}) {
     Linearization out{};
     float loss = 0, possible = 0;
     const auto step = std::max(1U, std::max(window.x1-window.x0, window.y1-window.y0) / 48U);
@@ -162,7 +165,8 @@ Linearization linearize(const Proxy& ref, const Proxy& src, Window window,
             if (r.usable == 0) continue;
             possible += 1.0F;
             const auto s = cubic(src, static_cast<float>(x)+dx, static_cast<float>(y)+dy);
-            if (!s) continue;
+            if (!s || (commonWith && !cubic(src, static_cast<float>(x)+(*commonWith)[0],
+                                              static_cast<float>(y)+(*commonWith)[1]))) continue;
             const float variance = r.variance+s->sample.variance+floor;
             const float delta = r.value-s->sample.value;
             const float z2 = delta*delta/variance;
@@ -203,9 +207,18 @@ MotionTile refineContinuous(const Proxy& ref, const Proxy& src, Window window,
         for (int backtrack = 0; backtrack < 6; ++backtrack) {
             const float dx = std::clamp(motion.dx+ux, -limit, limit);
             const float dy = std::clamp(motion.dy+uy, -limit, limit);
-            const auto candidate = linearize(ref, src, window, dx, dy, floor);
-            if (candidate.cost < state.cost && static_cast<float>(candidate.count) >= 0.95F*static_cast<float>(state.count)) {
-                motion.dx = dx; motion.dy = dy; state = candidate; accepted = true; break;
+            // Compare exactly the intersection of supported cubic footprints.
+            // A percentage-of-old-support gate locks small grouped guides to
+            // integer motion: the first fractional step necessarily loses a
+            // border row/column. Neither trial may win by discarding residuals.
+            const auto candidate = linearize(ref, src, window, dx, dy, floor,
+                std::array<float, 2>{motion.dx, motion.dy});
+            const auto current = linearize(ref, src, window, motion.dx, motion.dy, floor,
+                std::array<float, 2>{dx, dy});
+            if (candidate.coverage > 0 && candidate.cost < current.cost) {
+                motion.dx = dx; motion.dy = dy;
+                state = linearize(ref, src, window, dx, dy, floor);
+                accepted = true; break;
             }
             ux *= 0.5F; uy *= 0.5F;
         }
@@ -216,7 +229,7 @@ MotionTile refineContinuous(const Proxy& ref, const Proxy& src, Window window,
     return motion;
 }
 RegistrationEvidence geometricEvidence(const Proxy& ref, const Proxy& src, Window window,
-    MotionTile motion, float limit, float floor, bool ambiguous) {
+    MotionTile motion, float limit, float floor, bool ambiguous, float pixelStep) {
     const auto state = linearize(ref, src, window, motion.dx, motion.dy, floor);
     RegistrationEvidence out{}; out.supportedGuideSamples = state.count;
     // Subtract expected gradient-noise energy before declaring geometry
@@ -232,8 +245,8 @@ RegistrationEvidence geometricEvidence(const Proxy& ref, const Proxy& src, Windo
     const float largest = 0.5F*(trace+std::hypot(xx-yy,2.0F*xy));
     const float smallest = determinant/largest;
     // Each source proxy contributes to at most 16 residuals; the factor 16
-    // upper-bounds reuse for fixed weights/gradients. Native pixel scale is 2.
-    out.localizationStdDevPixels = 8.0F/std::sqrt(smallest);
+    // upper-bounds reuse for fixed weights/gradients. Convert guide to RAW units.
+    out.localizationStdDevPixels = 4.0F*pixelStep/std::sqrt(smallest);
     const auto shiftBound = [](std::uint32_t v, float shift, std::uint32_t bound) {
         return static_cast<std::uint32_t>(std::clamp(static_cast<float>(v)+shift, 0.0F, static_cast<float>(bound)));
     };
@@ -244,10 +257,21 @@ RegistrationEvidence geometricEvidence(const Proxy& ref, const Proxy& src, Windo
         {-motion.dx, -motion.dy, motion.confidence, motion.residual}, limit, floor);
     const auto reverseState = linearize(src, ref, reverseWindow, reverse.dx, reverse.dy, floor);
     if (reverseState.coverage == 0) return out;
-    out.cycleErrorPixels = 2.0F*std::hypot(motion.dx+reverse.dx, motion.dy+reverse.dy);
+    out.cycleErrorPixels = pixelStep*std::hypot(motion.dx+reverse.dx, motion.dy+reverse.dy);
     out.status = ambiguous ? GeometryStatus::Ambiguous :
         (out.cycleErrorPixels > 0.5F ? GeometryStatus::Inconsistent : GeometryStatus::Estimated);
     return out;
+}
+// Evaluate compatibility at the stated fallback, without optimizing it and
+// thereby turning an underconstrained prior back into a noisy displacement.
+MotionTile atPrior(const Proxy& ref, const Proxy& src, Window window,
+                   MotionTile prior, float floor) {
+    const auto state = linearize(ref, src, window, prior.dx, prior.dy, floor);
+    const auto compatibility = state.coverage > 0 ? Cost{state.cost, state.coverage} :
+        cost(ref, src, window, prior.dx, prior.dy, floor);
+    prior.residual = compatibility.value;
+    prior.confidence = compatibility.coverage/(1.0F+0.25F*compatibility.value);
+    return prior;
 }
 // Keep spatially distinct hypotheses through ambiguous coarse levels. A
 // single winning translation can lock onto a different texture period.
@@ -279,26 +303,18 @@ std::vector<MotionTile> beamSearch(const Proxy& ref, const Proxy& src,
     selected.push_back({});
     return selected;
 }
-}  // namespace
-
-AlignmentField alignTemporalRaw(const NormalizedRaw& reference, const NormalizedRaw& source,
-    imaging::FrameId referenceId, imaging::FrameId sourceId, const TemporalPolicy& policy) {
-    validateTemporalPolicy(policy);
-    if ((source.extent.width != reference.extent.width || source.extent.height != reference.extent.height) || source.cfa != reference.cfa ||
-        reference.extent.width < 2U || reference.extent.height < 2U ||
-        source.samples.size() != source.extent.pixelCount() || reference.samples.size() != source.samples.size()) {
-        throw std::invalid_argument("alignment requires compatible sensor coordinates");
-    }
+AlignmentField alignProxies(Proxy reference, Proxy source, imaging::Extent rawExtent,
+    float pixelStep, imaging::FrameId referenceId, imaging::FrameId sourceId, const TemporalPolicy& policy) {
     if (!referenceId.valid() || !sourceId.valid()) throw std::invalid_argument("alignment requires valid frame identities");
     const auto validSample = [](const TemporalSample& sample) {
         return std::isfinite(sample.value) && std::isfinite(sample.variance) && sample.variance >= 0 &&
             (sample.usable == 0 || sample.usable == 1);
     };
-    if (!std::all_of(reference.samples.begin(), reference.samples.end(), validSample) ||
-        !std::all_of(source.samples.begin(), source.samples.end(), validSample))
+    if (!std::all_of(reference.pixels.begin(), reference.pixels.end(), validSample) ||
+        !std::all_of(source.pixels.begin(), source.pixels.end(), validSample))
         throw std::invalid_argument("alignment requires finite value/variance/validity evidence");
     AlignmentField field{};
-    field.source = sourceId; field.reference = referenceId; field.extent = reference.extent;
+    field.source = sourceId; field.reference = referenceId; field.extent = rawExtent;
     field.tileSize = policy.tileSize;
     field.columns = (field.extent.width + field.tileSize - 1U) / field.tileSize;
     field.rows = (field.extent.height + field.tileSize - 1U) / field.tileSize;
@@ -312,8 +328,8 @@ AlignmentField alignTemporalRaw(const NormalizedRaw& reference, const Normalized
         return field;
     }
     std::vector<Proxy> rp, sp;
-    rp.push_back(proxy(reference)); sp.push_back(proxy(source));
-    float scale = 2.0F;
+    rp.push_back(std::move(reference)); sp.push_back(std::move(source));
+    float scale = pixelStep;
     while (std::min(rp.back().width, rp.back().height) >= 16U &&
            static_cast<float>(policy.maximumDisplacement) / scale > 4.0F) {
         rp.push_back(downsample(rp.back())); sp.push_back(downsample(sp.back())); scale *= 2.0F;
@@ -330,7 +346,7 @@ AlignmentField alignTemporalRaw(const NormalizedRaw& reference, const Normalized
             scale *= 0.5F;
         }
     }
-    const float limit = static_cast<float>(policy.maximumDisplacement) * 0.5F;
+    const float limit = static_cast<float>(policy.maximumDisplacement) / pixelStep;
     const auto& r = rp.front(); const auto& s = sp.front();
     global.residual = 1.0e20F;
     for (const auto& h : hypotheses) {
@@ -364,23 +380,37 @@ AlignmentField alignTemporalRaw(const NormalizedRaw& reference, const Normalized
         const float tolerance = 3.0F*std::sqrt(2.0F/static_cast<float>(std::max(1U, std::min(bestState.count, otherState.count))));
         if (otherState.coverage > 0 && otherState.cost-(1.0F-otherState.coverage) <= bestLoss+tolerance) ambiguous = true;
     }
-    field.globalEvidence = geometricEvidence(r, s, {0, 0, r.width, r.height}, global, limit, policy.varianceFloor, ambiguous);
-    field.global = global; field.global.dx *= 2.0F; field.global.dy *= 2.0F;
+    field.globalEvidence = geometricEvidence(r, s, {0, 0, r.width, r.height}, global, limit, policy.varianceFloor, ambiguous, pixelStep);
+    if (field.globalEvidence.status == GeometryStatus::Unobservable) {
+        global = atPrior(r, s, {0, 0, r.width, r.height}, {}, policy.varianceFloor);
+        field.globalEvidence = {};
+        field.globalEvidence.prior = GeometryPrior::Identity;
+        field.globalEvidence.supportedGuideSamples =
+            linearize(r, s, {0, 0, r.width, r.height}, 0, 0, policy.varianceFloor).count;
+    }
+    field.global = global; field.global.dx *= pixelStep; field.global.dy *= pixelStep;
     for (std::uint32_t ty = 0; ty < field.rows; ++ty) for (std::uint32_t tx = 0; tx < field.columns; ++tx) {
-        const auto halfTile = field.tileSize / 2U;
+        const auto halfTile = std::max(1U, field.tileSize / static_cast<std::uint32_t>(pixelStep));
         const auto x0 = std::min(tx * halfTile, r.width > halfTile ? r.width-halfTile : 0U);
         const auto y0 = std::min(ty * halfTile, r.height > halfTile ? r.height-halfTile : 0U);
-        const auto x1 = std::min(r.width, x0 + field.tileSize / 2U);
-        const auto y1 = std::min(r.height, y0 + field.tileSize / 2U);
+        const auto x1 = std::min(r.width, x0 + std::max(1U, field.tileSize / static_cast<std::uint32_t>(pixelStep)));
+        const auto y1 = std::min(r.height, y0 + std::max(1U, field.tileSize / static_cast<std::uint32_t>(pixelStep)));
         auto tile = search(r, s, {x0, y0, x1, y1}, global, 2, 1.0F, limit, policy.varianceFloor);
         tile = refineContinuous(r, s, {x0, y0, x1, y1}, tile, limit, policy.varianceFloor);
         const auto ti = static_cast<std::size_t>(ty)*field.columns+tx;
-        field.evidence[ti] = geometricEvidence(r, s, {x0, y0, x1, y1}, tile, limit, policy.varianceFloor, ambiguous);
+        field.evidence[ti] = geometricEvidence(r, s, {x0, y0, x1, y1}, tile, limit, policy.varianceFloor, ambiguous, pixelStep);
+        if (field.evidence[ti].status == GeometryStatus::Unobservable) {
+            tile = atPrior(r, s, {x0, y0, x1, y1}, global, policy.varianceFloor);
+            field.evidence[ti] = {};
+            field.evidence[ti].prior = GeometryPrior::Global;
+            field.evidence[ti].supportedGuideSamples =
+                linearize(r, s, {x0, y0, x1, y1}, tile.dx, tile.dy, policy.varianceFloor).count;
+        }
         if (field.evidence[ti].status == GeometryStatus::Inconsistent) {
             const float error = field.evidence[ti].cycleErrorPixels;
             tile.confidence /= 1.0F+error*error;
         }
-        tile.dx *= 2.0F; tile.dy *= 2.0F;
+        tile.dx *= pixelStep; tile.dy *= pixelStep;
         field.tiles[static_cast<std::size_t>(ty) * field.columns + tx] = tile;
     }
     // Conservative spatial-consistency confidence. Never smooth displacements
@@ -399,5 +429,32 @@ AlignmentField alignTemporalRaw(const NormalizedRaw& reference, const Normalized
         field.tiles[i].confidence /= 1.0F + 0.25F * mismatch / std::max(neighbors, 1.0F);
     }
     return field;
+}
+}  // namespace
+AlignmentField alignTemporalRaw(const NormalizedRaw& reference, const NormalizedRaw& source,
+    imaging::FrameId referenceId, imaging::FrameId sourceId, const TemporalPolicy& policy) {
+    validateTemporalPolicy(policy);
+    if (source.extent != reference.extent || source.cfa != reference.cfa || reference.extent.width < 2 || reference.extent.height < 2 ||
+        source.samples.size() != source.extent.pixelCount() || reference.samples.size() != source.samples.size())
+        throw std::invalid_argument("alignment requires compatible sensor coordinates");
+    // Validate before cell aggregation: invalid evidence must not disappear in a guide.
+    const auto valid = [](const TemporalSample& a) { return std::isfinite(a.value) && std::isfinite(a.variance) && a.variance >= 0 &&
+        (a.usable == 0 || a.usable == 1); };
+    if (!std::all_of(reference.samples.begin(), reference.samples.end(), valid) ||
+        !std::all_of(source.samples.begin(), source.samples.end(), valid))
+        throw std::invalid_argument("alignment requires finite value/variance/validity evidence");
+    return alignProxies(proxy(reference), proxy(source), reference.extent, 2, referenceId, sourceId, policy);
+}
+AlignmentField alignRawGuides(const AlignmentGuide& reference, const AlignmentGuide& source,
+    imaging::Extent rawExtent, imaging::FrameId referenceId, imaging::FrameId sourceId, const TemporalPolicy& policy) {
+    validateTemporalPolicy(policy);
+    if (reference.extent != source.extent || reference.pixelStep != source.pixelStep || reference.pixelStep == 0 ||
+        reference.pixelStep > 4096 || reference.samples.size() != reference.extent.pixelCount() ||
+        source.samples.size() != reference.samples.size() || reference.extent.width < 2 || reference.extent.height < 2 ||
+        rawExtent.width == 0 || rawExtent.height == 0)
+        throw std::invalid_argument("invalid RAW registration guide");
+    return alignProxies({reference.extent.width, reference.extent.height, reference.samples},
+        {source.extent.width, source.extent.height, source.samples}, rawExtent,
+        static_cast<float>(reference.pixelStep), referenceId, sourceId, policy);
 }
 }  // namespace latent::reference

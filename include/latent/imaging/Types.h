@@ -73,6 +73,7 @@ enum class DemosaicMethod : std::uint8_t {
 };
 
 struct Extent {
+    bool operator==(const Extent&) const = default;
     std::uint32_t width = 0;
     std::uint32_t height = 0;
 

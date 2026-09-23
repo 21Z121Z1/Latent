@@ -61,6 +61,10 @@ RawValidation validateRawMetadata(const RawFrameMetadata& metadata) {
     for (const auto* white : {&metadata.staticWhite, &metadata.dynamicWhite}) {
         if (white->usable() && !std::isfinite(*white->value)) return {false, "white level must be finite"};
     }
+    for (const auto* gains : {&metadata.neutralColorPoint, &metadata.colorCorrectionGains}) {
+        if (gains->usable()) for (float gain : *gains->value)
+            if (!std::isfinite(gain) || gain <= 0) return {false, "neutral/gain calibration must be finite and positive"};
+    }
     if (metadata.noiseProfile.usable()) {
         const auto check = validateNoiseModel(*metadata.noiseProfile.value);
         if (!check.valid) return check;
@@ -87,6 +91,10 @@ RawValidation validateRawFrame(const RawFrame& frame) {
     }
     if (frame.storage.rowStridePixels < frame.storage.extent.width) {
         return {false, "RAW row stride cannot be smaller than width"};
+    }
+    if (frame.sampling) {
+        const auto sampling = validateSampling(*frame.sampling, frame.storage.extent);
+        if (!sampling.valid) return {false, sampling.message};
     }
     const auto required = static_cast<std::uint64_t>(frame.storage.rowStridePixels) *
                           (frame.storage.extent.height - 1U) + frame.storage.extent.width;
