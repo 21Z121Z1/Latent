@@ -75,7 +75,7 @@ extern "C" JNIEXPORT jstring JNICALL Java_dev_latent_camera_NativeBridge_reconst
         const auto count=e->GetArrayLength(inputs);
         if(count<1||count>32||e->GetArrayLength(modes)!=count||e->GetArrayLength(paths)!=count||thermal<0||thermal>2)
             throw std::invalid_argument("invalid file burst membership/thermal observation");
-        imaging::RawBurst burst{};burst.id={1};burst.sequence={1};burst.calibration={1};
+        imaging::RawBurst burst{};burst.id=imaging::BurstId{1};burst.sequence=imaging::CaptureSequenceId{1};burst.calibration=imaging::CalibrationId{1};
         std::vector<runtime::RawFileBinding> files;std::vector<ParsedRawInput> parsed;
         for(jsize n=0;n<count;++n) {
             LocalRef input(e,e->GetObjectArrayElement(inputs,n)),mode(e,e->GetObjectArrayElement(modes,n)),path(e,e->GetObjectArrayElement(paths,n));checkJava(e);
