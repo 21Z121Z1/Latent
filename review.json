@@ -1,1 +1,1 @@
-{"parent":"64fc8c9379a883731f2abe099bfedcc8301fe8c3","tree":"84a0af8713a2f8f564008b512c256868fc4b0bd9","message":"feat(reconstruction): finish tiled joint RAW into lineage-preserving scene RGB"}
+{"parent":"70b5b1d2c82261ddfe43867037ac912859129dfb","tree":"9451744912f0d33b1e1ad215e171754c49e88cc8","message":"test(reconstruction): prove phase-aware SR against actual FusedRaw native-grid collapse"}

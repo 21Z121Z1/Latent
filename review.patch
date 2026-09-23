@@ -1,868 +1,120 @@
-diff --git a/cmake/Temporal.cmake b/cmake/Temporal.cmake
-index 225dc7e..9ce3b4a 100644
---- a/cmake/Temporal.cmake
-+++ b/cmake/Temporal.cmake
-@@ -5,6 +5,8 @@ target_sources(latent_core PRIVATE
-     src/runtime/Camera2Sampling.cpp
-     src/runtime/TiledReconstruction.cpp
-     src/reference/DirectReconstruct.cpp
-+    src/reference/JointScene.cpp
-+    src/runtime/JointScene.cpp
-     src/runtime/TemporalPipeline.cpp
-     src/runtime/CapturePlan.cpp
-     src/runtime/CfaTransport.cpp
-@@ -71,6 +73,7 @@ if(LATENT_BUILD_TESTS)
-     endif()
-     latent_temporal_test(latent_highres_tests tests/test_highres.cpp)
-     latent_temporal_test(latent_joint_raw_tests tests/test_joint_raw.cpp)
-+    latent_temporal_test(latent_joint_scene_tests tests/test_joint_scene.cpp)
-     latent_temporal_test(latent_camera2_sampling_tests tests/test_camera2_sampling.cpp)
-     latent_temporal_test(latent_temporal_tests tests/test_temporal.cpp)
-     latent_temporal_test(latent_registration_tests tests/test_registration.cpp)
-@@ -81,6 +84,8 @@ if(LATENT_BUILD_TESTS)
-         latent_temporal_test(latent_highres_vulkan_tests tests/test_highres_vulkan.cpp)
-         latent_temporal_test(latent_joint_raw_vulkan_tests tests/test_joint_raw.cpp)
-         target_compile_definitions(latent_joint_raw_vulkan_tests PRIVATE LATENT_JOINT_TEST_VULKAN=1)
-+        latent_temporal_test(latent_joint_scene_vulkan_tests tests/test_joint_scene.cpp)
-+        target_compile_definitions(latent_joint_scene_vulkan_tests PRIVATE LATENT_JOINT_TEST_VULKAN=1)
-         latent_temporal_test(latent_temporal_vulkan_tests tests/test_temporal_vulkan.cpp)
-     endif()
- endif()
-diff --git a/docs/architecture.md b/docs/architecture.md
-index 7b795eb..5653d00 100644
---- a/docs/architecture.md
-+++ b/docs/architecture.md
-@@ -374,6 +374,16 @@ N=1 specialization retain conservative behavior when evidence cannot support the
- fit. Sampling support and quality are not interchangeable. Output is explicitly
- green-balanced **camera-linear RGB**, not yet an AP1/D60 `SceneFrame`; WB/color
- conversion, scene semantics, rendering and codec authority remain downstream.
-+`reconstructRawScene` composes this operation with explicit scene finishing.
-+It uses the existing color resolver, checks the reference green calibration,
-+applies RGB white balance and scene-coordinate scale once, and retains captured
-+member lineage through existing rendering. Missing color coverage fails closed.
-+Only final scene RGB and optional conditional variance bounds are image-sized;
-+no intermediate full-frame camera RGB or mandatory `FusedRaw` is allocated.
-+Cross-channel covariance is unavailable, so scene uncertainty is a bound, not a
-+replacement affine shot/read model. Aggregate direct moments do not expose
-+per-frame regional tap counts; the lineage's contribution vector is explicitly
-+unavailable, not fabricated from frame count or zero-filled.
- No learned weights or unlicensed JSR implementation are imported.
- 
- The [joint RAW specification](joint-raw-reconstruction.md) records mathematics,
 diff --git a/docs/joint-raw-reconstruction.md b/docs/joint-raw-reconstruction.md
-index f6b288d..36dd379 100644
+index 36dd379..c85ec96 100644
 --- a/docs/joint-raw-reconstruction.md
 +++ b/docs/joint-raw-reconstruction.md
-@@ -206,6 +206,47 @@ diagnostics are available through the C++ API; that legacy file stores only its
- original fields, while the JSON trace includes aggregate diagnostics. Kotlin
- gets the algorithm version from the native report instead of duplicating it.
- 
-+## Camera-linear to scene composition
-+
-+`finishDirectSceneTile` is the deterministic FP32 boundary from the existing
-+camera RGB/coverage/variance payload to scene RGB. It calls the SAME
-+`cameraToSceneMatrix` resolver as native-grid demosaic finishing, including both
-+DNG matrix routes. Input is already balanced between G0/G1 by the reference
-+observation; finishing applies `[WB_R, mean(WB_G0, WB_G1), WB_B]`, then AP1/D60
-+conversion and the explicit positive finite `sceneScaleEV` coordinate. Sensor
-+correction flags are rejected here: lens shading and defect rejection belong to
-+RAW normalization. There is no clamp, re-quantization or second demosaic.
-+
-+`reconstructRawScene` adapts the canonical tiled executor into that boundary.
-+Reference identity is explicit because it fixes both radiometry and the green
-+balance. An inconsistent requested green ratio fails before reading RAW. Output
-+RGB plus optional variance storage is admitted BEFORE allocating the image; its
-+actual vector capacity is also charged by the tiled planner. Color is finished
-+row-by-row directly into the final scene. CPU/Vulkan selection changes only the
-+RAW execution; scene finishing remains the FP32 reference operation. Existing
-+SDR/HDR rendering consumes the resulting ordinary `SceneFrame` unchanged.
-+
-+The source burst, sequence, calibration, reference and ALL captured frame IDs
-+are retained in immutable lineage, including reduced/rejected members. Aggregate
-+direct moments do not expose per-frame regional tap counts: those contributions
-+remain explicitly unavailable (empty), not guessed from frame count. The native
-+`FusedRaw` route retains its existing richer regional audit. A missing RGB
-+channel cannot silently become black in `SceneFrame`; scene materialization
-+fails while `reconstructRawTiles` remains available for masked evidence output.
-+
-+With camera-channel conditional variances `v_c` but no cross-color covariance,
-+the separate scene bound is
-+
-+```
-+bound_s = (sceneScale * sum_c abs(M_sc) * WB_c * sqrt(v_c))^2
-+```
-+
-+This triangle bound permits arbitrary cross-channel correlation. It retains the
-+RAW estimator's fixed-weight/support/geometry conditions; it is not a calibrated
-+posterior and does not include model, motion or calibration error. It stays in
-+`JointSceneResult::conditionalVarianceUpperBound`; `SceneFrame`'s single-RAW
-+shot/read noise representation is not populated with a fabricated fit.
-+
- ## Validation and reproduction
- 
- `latent_joint_raw_tests` supplies independent 4x4 photosite integration of
-@@ -228,6 +269,26 @@ conditional variance, QR frame support and mixed/correlated bounds. Seeded
+@@ -269,6 +269,18 @@ conditional variance, QR frame support and mixed/correlated bounds. Seeded
  CPU oracle and the actual Vulkan executor; it must not fall back in required-GPU
  CI. Existing exhaustive grouped-CFA CPU/Vulkan checks retain their original
  RGB/variance/frame/confidence tolerances and add phase/model comparisons.
-+`latent_joint_scene_tests` and its required-real-Vulkan variant prove the complete
-+RAW -> camera RGB -> scene -> SDR/HDR composition. They cover all four Bayer
-+orders, group sizes 1 through 4 with nonzero origins, 1x/2x grids, fractional
-+output coordinates, exact tiled/full equivalence, explicit non-first references,
-+frame-budget reduction with complete capture lineage, unequal green response,
-+K=1, cancellation, insufficient memory before source reads and all-clipped
-+failure. The tile oracle independently composes a double-precision color matrix
-+and enumerates all eight correlated noise signs to attain the variance bound.
-+Both DNG routes are compared with the established native-grid demosaic boundary
-+on constant spectral fields. Malformed coverage, NaN/Inf, arithmetic overflow,
-+invalid DNG/WB and scene-coordinate underflow-to-zero fail explicitly.
-+
-+Scene differential tolerances PROPAGATE the existing camera budgets through the
-+absolute WB/matrix row norm: RGB `3e-5`; variance interval
-+`1e-7 + 1e-3*v`. Monotone square roots propagate the variance endpoints, including
-+near zero. Finishing-only checks allow 2e-6 relative FP32 color/bound error and
-+4e-6 back-normalized gain error for rounded multiply, square root and accumulation.
-+The native-grid DNG composition comparison permits 4e-6 relative error for the
-+extra demosaic operations. The unequal-green RAW test additionally permits
-+4e-4 absolute error for 12-bit ADC quantization. No raw comparison gate is relaxed.
- Existing temporal/registration/Camera2/RAW transport suites remain required.
- Android's existing installed-APK output-size check guards V1 wire compatibility.
- Exact-head CI results and downloadable artifacts belong to the PR/checks, not a
-diff --git a/docs/plans/0005-jsr-informed-joint-raw.md b/docs/plans/0005-jsr-informed-joint-raw.md
-index 299e5e5..97a06c1 100644
---- a/docs/plans/0005-jsr-informed-joint-raw.md
-+++ b/docs/plans/0005-jsr-informed-joint-raw.md
-@@ -3,7 +3,7 @@
- Status: Active
- Owner: Latent reconstruction engineering
- Related: ADR 0005; Plan 0004
--Current step: software implementation and local validation complete; exact-head Actions convergence is the delivery gate.
-+Current step: implementation complete; integration and merge remain gated by the live exact-head PR checks, not a copied CI snapshot.
- 
- ## Goal
- 
-@@ -43,7 +43,9 @@ increment's mathematical/provenance/compatibility detail. `SensorSampling`
- remains the CFA authority; the continuous guide remains the registration solver.
- Observations, delegated kernel policy and capabilities remain distinct. Output
- is explicitly camera-linear, not a falsely labelled `SceneFrame`. Scene scale,
--WB/color conversion, rendering and encoding are not folded into fusion.
-+WB/color conversion, rendering and encoding are not folded into fusion. A separate
-+`reconstructRawScene` adapter now composes the camera-linear output with the
-+canonical scene/color boundary and existing SDR/HDR rendering.
- 
- Implemented: scale-homogeneous robust weights; correct spatial-noise debiasing;
- six-basis quadratic moments; phase/SNR/leverage admission; Gaussian fallback;
-@@ -51,6 +53,12 @@ full signed noise covariance and separate correlated bounds; QR-root frame
- support; affine-plus-row inverse Jacobians; matching GLSL; actual-size arena
- admission; versioned trace/diagnostics; explicit high-detail policy; N=1
- specialization; V1 Android wire packing; reproducible matched-grid benchmark.
-+Also implemented: direct camera-to-scene FP32 finishing; shared DNG/matrix color
-+resolution; calibrated common-green validation; fail-closed missing RGB coverage;
-+conditional cross-color variance bounds; pre-allocation scene residency admission;
-+complete captured-member lineage and rendering composition. Per-frame regional
-+contribution counts remain unavailable from direct aggregate moments; no counts
-+are invented. The existing FusedRaw audit is unchanged.
- JSR source/weights/binaries are neither consumed nor redistributed.
- 
- ## Steps and validation
-@@ -63,7 +71,11 @@ JSR source/weights/binaries are neither consumed nor redistributed.
-    rather than loosening comparison gates.
- 4. Lower to Vulkan, validate actual execution against the CPU oracle and add the
-    same SR/gain/phase property fixtures to required-GPU CI.
--5. Publish commits and PR, inspect latest checks/artifacts, fix failures and
-+5. Compose the direct camera-linear output with the existing scene boundary;
-+   prove DNG/matrix, green calibration, bound propagation, lineage, cancellation
-+   and output admission on CPU and actual Vulkan. Fix Android Kotlin long-valued
-+   Camera2 use cases and explicit native semantic ID construction.
-+6. Publish commits and PR, inspect latest checks/artifacts, fix failures and
-    rerun until the software acceptance gates converge.
- 
- Local strict Release no-Vulkan and software-Vulkan runs are evidence for the
-@@ -82,11 +94,13 @@ the algorithm identifier. No automatic production capture-mode promotion occurs.
- 
- ## Status ledger
- 
--Completed: live-state reconciliation, provenance boundary, implementation,
--independent CPU evidence, initial full software-Vulkan convergence and Android
--source compatibility updates.
--Current: final source review, publication and exact-head CI/artifact inspection.
--Remaining delivery gate: latest applicable Actions and Android installed-APK checks.
-+Implemented: live-state reconciliation, provenance boundary, joint CPU/Vulkan
-+reconstruction, scene/render composition, independent property/differential tests
-+and Android source compatibility corrections. Local strict no-Vulkan and actual
-+software-Vulkan suites pass; that is not a claim about an arbitrary newer commit.
-+Integration status is the live PR's exact-head native, sanitizer, high-resolution
-+and Android build/unit/lint/installed-APK checks. Merge requires those gates and
-+the stacked prerequisite; this plan stays Active until integration is merged.
- 
- ## Risks / deliberately unclaimed capabilities
- 
-diff --git a/docs/verification.md b/docs/verification.md
-index d3d051e..8dd3082 100644
---- a/docs/verification.md
-+++ b/docs/verification.md
-@@ -274,3 +274,12 @@ conditioning and square-root frame statistics are fixes, not reasons to loosen
- RGB or effective-frame gates. See the [specification](joint-raw-reconstruction.md)
- for exact hypotheses, policies, reproduction commands and limits. Android's V1
- file-size test remains required after changing the in-memory pixel structure.
-+
-+The `latent_joint_scene_tests` and `latent_joint_scene_vulkan_tests` suites add
-+RAW-to-scene-to-render composition without `FusedRaw`, explicit coverage failure,
-+calibration/lineage/memory admission, both DNG color paths and conditional
-+cross-channel covariance bounds. The GPU suite requires actual Vulkan execution.
-+Their numerical budgets propagate the unchanged camera-oracle budgets through
-+the color transform; see the joint specification. Both are registered in the
-+normal CTest matrix, including no-Vulkan and sanitizer configurations where
-+applicable. No separate optional workflow is needed for these gates.
-diff --git a/include/latent/reference/JointScene.h b/include/latent/reference/JointScene.h
-new file mode 100644
-index 0000000..c8cd5e6
---- /dev/null
-+++ b/include/latent/reference/JointScene.h
-@@ -0,0 +1,28 @@
-+#pragma once
-+
-+#include "latent/reference/DirectReconstruct.h"
-+#include "latent/reference/ReferenceReconstruct.h"
-+
-+#include <span>
-+
-+namespace latent::reference {
-+
-+// Finish canonical green-balanced camera-linear RGB, WITHOUT another demosaic,
-+// RAW quantization, sensor correction, or display transform. The caller must
-+// establish that input G0/G1 balancing used the same ratio as the config gains.
-+// RGB white balance is [R, mean(G0,G1), B] and is applied exactly once here.
-+//
-+// Output arrays are interleaved RGB and must not alias inputs. Every input color
-+// must have positive finite coverage: SceneFrame cannot represent missing RGB.
-+// Non-finite input/output or arithmetic overflow fails closed; no clamp is used.
-+//
-+// If propagateNoise is true, varianceUpperBound has 3*N entries. Otherwise it
-+// must be empty. Cross-channel covariance is unavailable, so each scene-channel
-+// bound is (sum_c abs(M_sc * WB_c) * sqrt(cameraVariance_c) * sceneScale)^2.
-+// It is conditional on the reconstruction's frozen support/weights/geometry,
-+// NOT a calibrated posterior or an independent-channel marginal estimate.
-+void finishDirectSceneTile(std::span<const ReconstructedPixel> camera,
-+    const ReconstructionConfig& color, std::span<float> sceneRgb,
-+    std::span<float> varianceUpperBound);
-+
-+}  // namespace latent::reference
-diff --git a/include/latent/reference/ReferenceReconstruct.h b/include/latent/reference/ReferenceReconstruct.h
-index f54eeec..ef0de06 100644
---- a/include/latent/reference/ReferenceReconstruct.h
-+++ b/include/latent/reference/ReferenceReconstruct.h
-@@ -40,6 +40,12 @@ struct ReconstructionConfig {
-     float whiteBalanceConfidence = 0.0F;
- };
- 
-+// Canonical post-white-balance camera-to-AP1/D60 transform. Both demosaic
-+// finishing and direct camera-linear reconstruction resolve color here.
-+[[nodiscard]] imaging::Matrix3f cameraToSceneMatrix(const ReconstructionConfig& config);
-+// A scene coordinate must have a finite, strictly positive FP32 scale.
-+[[nodiscard]] float sceneCoordinateScale(float sceneScaleEV);
-+
- [[nodiscard]] imaging::SceneFrame reconstructSingleRaw(
-     const imaging::RawFrame& raw,
-     const ReconstructionConfig& config);
-diff --git a/include/latent/runtime/JointScene.h b/include/latent/runtime/JointScene.h
-new file mode 100644
-index 0000000..8de6af5
---- /dev/null
-+++ b/include/latent/runtime/JointScene.h
-@@ -0,0 +1,40 @@
-+#pragma once
-+
-+#include "latent/reference/JointScene.h"
-+#include "latent/runtime/TiledReconstruction.h"
-+
-+namespace latent::runtime {
-+
-+struct JointSceneResult {
-+    imaging::SceneFrame scene;
-+    // Interleaved scene RGB bounds; empty only when color.propagateNoise=false.
-+    // See finishDirectSceneTile. Never masquerades as SceneFrame's affine noise.
-+    std::vector<float> conditionalVarianceUpperBound;
-+    DirectReconstructionTrace trace;
-+};
-+
-+// Materializing scene adapter over the canonical STREAMING reconstruction.
-+// Only final scene RGB and optional variance bounds are image-sized; there is no
-+// full-frame camera RGB, feature tensor, FusedRaw, or second reconstruction.
-+// Output residency is admitted against caps before allocation or source reads.
-+// For larger-than-RAM output use reconstructRawTiles with a streaming sink.
-+//
-+// The explicit reference fixes grid/radiometry AND the G0/G1 balance observation.
-+// A mismatched green ratio in color is rejected, not silently reinterpreted.
-+// Sensor corrections belong to policy, so color's sensor correction flags must
-+// be disabled. Every output color requires positive coverage; uncovered pixels
-+// fail the scene operation rather than being silently displayed as black.
-+//
-+// continueExecution, when supplied, returns true to proceed and false to cancel.
-+// Cancellation discards the partial scene and propagates as an exception.
-+//
-+// Lineage retains all capture-order inputs, even when delegated frame reduction
-+// or rejection excludes some. Per-frame accepted tap counts are not inferred
-+// from aggregate moments: contributions remain unavailable (empty), not zero.
-+[[nodiscard]] JointSceneResult reconstructRawScene(const imaging::RawBurst& burst,
-+    RawTileSource& source, const ReconstructionGrid& grid, imaging::FrameId reference,
-+    const reference::ReconstructionConfig& color, const TiledReconstructionPolicy& policy = {},
-+    const ReconstructionCapabilities& caps = {},
-+    std::span<const ReconstructionMotion> motion = {}, std::function<bool()> continueExecution = {});
-+
-+}  // namespace latent::runtime
-diff --git a/src/reference/JointScene.cpp b/src/reference/JointScene.cpp
-new file mode 100644
-index 0000000..8d23380
---- /dev/null
-+++ b/src/reference/JointScene.cpp
-@@ -0,0 +1,59 @@
-+#include "latent/reference/JointScene.h"
-+
-+#include <array>
-+#include <cmath>
-+#include <limits>
-+#include <stdexcept>
-+
-+namespace latent::reference {
-+
-+void finishDirectSceneTile(std::span<const ReconstructedPixel> camera,
-+    const ReconstructionConfig& color, std::span<float> sceneRgb,
-+    std::span<float> varianceUpperBound) {
-+    if (color.applyLensShading || color.defectCorrection != DefectCorrectionMode::Disabled) {
-+        throw std::invalid_argument("direct scene finishing must not repeat sensor corrections");
-+    }
-+    if (camera.empty() || camera.size() > std::numeric_limits<std::size_t>::max() / 3U ||
-+        sceneRgb.size() != camera.size() * 3U ||
-+        varianceUpperBound.size() != (color.propagateNoise ? sceneRgb.size() : 0U)) {
-+        throw std::invalid_argument("invalid direct scene tile payload");
-+    }
-+    const auto matrix = cameraToSceneMatrix(color);
-+    const float scale = sceneCoordinateScale(color.sceneScaleEV);
-+    const std::array<float, 3> wb{color.whiteBalanceGains[0],
-+        0.5F * (color.whiteBalanceGains[1] + color.whiteBalanceGains[2]),
-+        color.whiteBalanceGains[3]};
-+    if (!std::isfinite(wb[1]) || wb[1] <= 0.0F) {
-+        throw std::invalid_argument("invalid common green white balance");
-+    }
-+    for (std::size_t i = 0; i < camera.size(); ++i) {
-+        std::array<float, 3> rgb{}, sigma{};
-+        for (std::size_t c = 0; c < 3U; ++c) {
-+            const auto& p = camera[i];
-+            if (!std::isfinite(p.rgb[c]) || !std::isfinite(p.variance[c]) || p.variance[c] < 0.0F ||
-+                !std::isfinite(p.confidence[c]) || p.confidence[c] <= 0.0F || p.confidence[c] > 1.0F) {
-+                throw std::invalid_argument("direct scene requires finite, covered camera RGB and variance");
-+            }
-+            rgb[c] = p.rgb[c] * wb[c];
-+            if (color.propagateNoise) sigma[c] = std::sqrt(p.variance[c]) * wb[c];
-+        }
-+        const auto scene = matrix.apply(rgb);
-+        for (std::size_t c = 0; c < 3U; ++c) {
-+            const float value = scene[c] * scale;
-+            if (!std::isfinite(value)) throw std::overflow_error("non-finite direct scene color result");
-+            sceneRgb[i * 3U + c] = value;
-+            if (color.propagateNoise) {
-+                float boundSigma = 0.0F;
-+                for (std::size_t k = 0; k < 3U; ++k) {
-+                    boundSigma += std::abs(matrix.values[c * 3U + k]) * sigma[k];
-+                }
-+                boundSigma *= scale;
-+                const float bound = boundSigma * boundSigma;
-+                if (!std::isfinite(bound)) throw std::overflow_error("non-finite direct scene variance bound");
-+                varianceUpperBound[i * 3U + c] = bound;
-+            }
-+        }
-+    }
-+}
-+
-+}  // namespace latent::reference
-diff --git a/src/reference/ReferenceReconstruct.cpp b/src/reference/ReferenceReconstruct.cpp
-index 441c0eb..7e18002 100644
---- a/src/reference/ReferenceReconstruct.cpp
-+++ b/src/reference/ReferenceReconstruct.cpp
-@@ -16,6 +16,9 @@ namespace latent::reference {
- namespace {
- 
- void validateConfig(const ReconstructionConfig& config) {
-+    if (config.colorPath != ColorPath::ExplicitMatrix && config.colorPath != ColorPath::DngProfile) {
-+        throw std::invalid_argument("unknown reconstruction color path");
-+    }
-     if (!std::isfinite(config.sceneScaleEV)) {
-         throw std::invalid_argument("sceneScaleEV must be finite");
++A separate known-geometry comparison exercises the actual retained
++`makeReferenceFusionSession -> finishTemporalFusion -> Malvar demosaic` route,
++then explicitly bilinearly samples that native RGB at the SAME output grid.
++It uses 16 known half-pixel Cartesian shifts and 12 independent R/G/B horizontal
++and vertical stripe targets at 0.35/0.60 cycles per RAW photosite. To avoid a
++motion-rejection straw man, this diagnostic gives legacy fusion a permissive
++100-sigma cutoff and 1e-4 variance floor; every evaluated tap must retain effective
++support above 15 frames. The test gates lower joint MSE against aperture-integrated
++truth and unchanged flat spectral axes, and logs both errors. This measures
++phase-preserving reconstruction versus actual native-grid collapse, not merely
++versus the direct estimator's Gaussian ablation. It does not claim universal
++real-camera quality or recommend those diagnostic fusion settings for capture.
+ `latent_joint_scene_tests` and its required-real-Vulkan variant prove the complete
+ RAW -> camera RGB -> scene -> SDR/HDR composition. They cover all four Bayer
+ orders, group sizes 1 through 4 with nonzero origins, 1x/2x grids, fractional
+diff --git a/tests/test_joint_raw.cpp b/tests/test_joint_raw.cpp
+index abb0e04..f969ec3 100644
+--- a/tests/test_joint_raw.cpp
++++ b/tests/test_joint_raw.cpp
+@@ -1,4 +1,5 @@
+ #include "latent/reference/DirectReconstruct.h"
++#include "latent/reference/TemporalReconstruct.h"
+ #include "latent/testing/SyntheticRaw.h"
+ #ifdef LATENT_JOINT_TEST_VULKAN
+ #include "latent/vulkan/DirectReconstruction.h"
+@@ -119,6 +120,77 @@ void srQuality() {
      }
-@@ -68,7 +71,18 @@ std::vector<imaging::DefectPixel> collectDefects(
-     return defects;
+     std::cout<<"joint-sr worst_mse_ratio="<<worstRatio<<'\n';
  }
- 
-+}  // namespace
-+
-+float sceneCoordinateScale(float sceneScaleEV) {
-+    const float scale = std::exp2(sceneScaleEV);
-+    if (!std::isfinite(sceneScaleEV) || !std::isfinite(scale) || scale <= 0.0F) {
-+        throw std::invalid_argument("sceneScaleEV is outside the positive finite FP32 coordinate range");
-+    }
-+    return scale;
-+}
-+
- imaging::Matrix3f cameraToSceneMatrix(const ReconstructionConfig& config) {
-+    validateConfig(config);
-     imaging::Matrix3f cameraToScene = imaging::Matrix3f::identity();
-     if (config.colorPath == ColorPath::DngProfile) {
-         const auto profileCheck = validateDngProfile(config.dngProfile);
-@@ -85,8 +99,6 @@ imaging::Matrix3f cameraToSceneMatrix(const ReconstructionConfig& config) {
-     return cameraToScene;
- }
- 
--}  // namespace
--
- imaging::SceneFrame reconstructSingleRaw(
-     const imaging::RawFrame& raw,
-     const ReconstructionConfig& config) {
-@@ -135,7 +147,7 @@ imaging::SceneFrame reconstructSingleRaw(
-             lensShadingApplied,
-             lensShadingApplied ? &*raw.lensShading.value : nullptr,
-             cameraToSceneMatrix(config),
--            std::exp2(config.sceneScaleEV),
-+            sceneCoordinateScale(config.sceneScaleEV),
-             config.demosaicMethod);
-     }
- 
-@@ -163,10 +175,7 @@ imaging::SceneFrame reconstructSensorLinear(
-     scene.image.extent = rgb.extent;
-     scene.image.rgb.resize(static_cast<std::size_t>(rgb.extent.pixelCount()) * 3U);
-     scene.sceneScaleEV = config.sceneScaleEV;
--    const float sceneScale = std::exp2(config.sceneScaleEV);
--    if (!std::isfinite(sceneScale)) {
--        throw std::invalid_argument("sceneScaleEV is outside the finite FP32 coordinate range");
--    }
-+    const float sceneScale = sceneCoordinateScale(config.sceneScaleEV);
-     scene.whiteBalanceConfidence = config.whiteBalanceConfidence;
- 
-     for (std::size_t i = 0; i < scene.image.rgb.size(); i += 3U) {
-diff --git a/src/runtime/JointScene.cpp b/src/runtime/JointScene.cpp
-new file mode 100644
-index 0000000..f00bf61
---- /dev/null
-+++ b/src/runtime/JointScene.cpp
-@@ -0,0 +1,102 @@
-+#include "latent/runtime/JointScene.h"
-+
-+#include <algorithm>
-+#include <cmath>
-+#include <limits>
-+#include <memory>
-+#include <stdexcept>
-+#include <utility>
-+
-+namespace latent::runtime {
-+namespace {
-+class SceneSink final : public ReconstructionTileSink {
-+public:
-+    SceneSink(JointSceneResult& result, imaging::Extent extent,
-+        const reference::ReconstructionConfig& color) : result_(result), color_(color) {
-+        result_.scene.image.extent = extent;
-+        result_.scene.image.rgb.resize(static_cast<std::size_t>(extent.pixelCount()) * 3U);
-+        if (color.propagateNoise) result_.conditionalVarianceUpperBound.resize(result_.scene.image.rgb.size());
-+    }
-+    std::uint64_t residentBytes() const override {
-+        return (static_cast<std::uint64_t>(result_.scene.image.rgb.capacity()) +
-+            result_.conditionalVarianceUpperBound.capacity()) * sizeof(float);
-+    }
-+    void write(imaging::SensorRect rect, std::span<const reference::ReconstructedPixel> pixels) override {
-+        const auto e = result_.scene.image.extent;
-+        if (!rect.width || !rect.height || rect.x >= e.width || rect.y >= e.height ||
-+            rect.width > e.width - rect.x || rect.height > e.height - rect.y ||
-+            pixels.size() != static_cast<std::size_t>(rect.width) * rect.height) {
-+            throw std::invalid_argument("invalid scene sink tile");
++// Exercise the actual retained native-grid fusion and demosaic implementation,
++// not a reimplementation of its sampler. Exact geometry and a permissive robust
++// cutoff keep valid phase changes from becoming a motion-rejection straw man.
++std::vector<ReconstructedPixel> nativeGridBaseline(const Fixture& f) {
++    reference::NormalizedRaw ref{}; ref.extent=f.source;
++    bool matched=false;
++    for(unsigned pattern=0;pattern<4;++pattern) {
++        const auto cfa=static_cast<imaging::CfaPattern>(pattern);bool same=true;
++        for(std::uint32_t y=0;y<2;++y)for(std::uint32_t x=0;x<2;++x) {
++            const auto actual=static_cast<imaging::CfaChannel>(f.frames[0].raw[static_cast<std::size_t>(y)*f.source.width+x].channel);
++            same= same && reference::rgbChannelIndex(imaging::cfaChannelAt(cfa,x,y))==reference::rgbChannelIndex(actual);
 +        }
-+        // Row spans avoid retaining even a second tile-sized color payload.
-+        for (std::uint32_t y = 0; y < rect.height; ++y) {
-+            const auto offset = (static_cast<std::size_t>(rect.y + y) * e.width + rect.x) * 3U;
-+            auto rgb = std::span(result_.scene.image.rgb).subspan(offset, rect.width * 3U);
-+            auto variance = color_.propagateNoise ?
-+                std::span(result_.conditionalVarianceUpperBound).subspan(offset, rect.width * 3U) : std::span<float>{};
-+            reference::finishDirectSceneTile(pixels.subspan(static_cast<std::size_t>(y) * rect.width, rect.width),
-+                color_, rgb, variance);
++        if(same){ref.cfa=cfa;matched=true;break;}
++    }
++    check(matched,"legacy comparator requires a regular Bayer spectral layout");
++    const auto copySamples=[](reference::NormalizedRaw& n,const Frame& frame) {
++        n.samples.clear();n.samples.reserve(frame.raw.size());
++        for(const auto& sample:frame.raw)n.samples.push_back({sample.value,sample.variance,static_cast<float>(sample.valid),1});
++    };
++    copySamples(ref,f.frames.front());
++    reference::TemporalPolicy policy{};policy.residualCutoffSigma=100;
++    policy.varianceFloor=1e-4F;policy.missingNoiseVariance=1e-4F;
++    auto session=reference::makeReferenceFusionSession(ref,policy);
++    for(std::size_t i=0;i<f.frames.size();++i) {
++        auto source=ref;copySamples(source,f.frames[i]);
++        reference::AlignmentField field{};field.source=imaging::FrameId{i+1};field.reference=imaging::FrameId{1};
++        field.extent=f.source;field.tileSize=policy.tileSize;
++        field.columns=(f.source.width+field.tileSize-1)/field.tileSize;
++        field.rows=(f.source.height+field.tileSize-1)/field.tileSize;
++        field.tiles.assign(static_cast<std::size_t>(field.columns)*field.rows,
++            {f.frames[i].warps[0].x-f.originX,f.frames[i].warps[0].y-f.originY,1,0});
++        (void)session->add(source,field,i==0);
++    }
++    const auto fused=reference::finishTemporalFusion(ref,session->finish(),{});
++    const auto rgb=reference::demosaicSensorLinear(fused.sensor,{1,1,1,1},reference::DemosaicMethod::MalvarHeCutler2004);
++    std::vector<ReconstructedPixel> out(static_cast<std::size_t>(f.output.pixelCount()));
++    for(std::uint32_t y=0;y<f.output.height;++y)for(std::uint32_t x=0;x<f.output.width;++x) {
++        const float rx=f.originX+static_cast<float>(x)*f.step,ry=f.originY+static_cast<float>(y)*f.step;
++        const auto ix=static_cast<std::uint32_t>(rx),iy=static_cast<std::uint32_t>(ry);
++        const float tx=rx-static_cast<float>(ix),ty=ry-static_cast<float>(iy);
++        // Baseline only: explicit bilinear display-grid resampling after the
++        // native CFA evidence has already collapsed. Joint never calls this.
++        for(std::uint32_t j=0;j<2;++j)for(std::uint32_t k=0;k<2;++k) {
++            const float w=(k?tx:1-tx)*(j?ty:1-ty);
++            const auto index=static_cast<std::size_t>(iy+j)*f.source.width+ix+k;
++            check(fused.uncertainty.effectiveSampleCount[index]>15,
++                "legacy comparison must retain almost all 16 phase frames, not fall back to reference");
++            for(std::size_t c=0;c<3;++c)out[static_cast<std::size_t>(y)*f.output.width+x].rgb[c]+=w*rgb.rgb[index*3+c];
 +        }
 +    }
-+private:
-+    JointSceneResult& result_;
-+    const reference::ReconstructionConfig& color_;
-+};
++    return out;
 +}
-+
-+JointSceneResult reconstructRawScene(const imaging::RawBurst& burst, RawTileSource& source,
-+    const ReconstructionGrid& grid, imaging::FrameId referenceId,
-+    const reference::ReconstructionConfig& color, const TiledReconstructionPolicy& policy,
-+    const ReconstructionCapabilities& caps, std::span<const ReconstructionMotion> motion,
-+    std::function<bool()> continueExecution) {
-+    if (continueExecution && !continueExecution()) throw std::runtime_error("direct reconstruction cancelled");
-+    // Admission precedes image allocation, including checked size arithmetic.
-+    const std::uint64_t channels = color.propagateNoise ? 6U : 3U;
-+    if (grid.extent.pixelCount() > std::numeric_limits<std::size_t>::max() / (channels * sizeof(float))) {
-+        throw std::invalid_argument("direct scene output size overflow");
-+    }
-+    const auto bytes = grid.extent.pixelCount() * channels * sizeof(float);
-+    (void)planTiledReconstruction(burst, grid, policy, caps, source.residentBytes(), bytes);
-+    const auto member = std::find_if(burst.members.begin(), burst.members.end(),
-+        [&](const auto& m) { return m.id == referenceId; });
-+    if (member == burst.members.end()) throw std::invalid_argument("scene reference is not in burst");
-+    if (color.applyLensShading || color.defectCorrection != reference::DefectCorrectionMode::Disabled) {
-+        throw std::invalid_argument("direct scene sensor corrections belong to tiled policy");
-+    }
-+    (void)reference::cameraToSceneMatrix(color);
-+    (void)reference::sceneCoordinateScale(color.sceneScaleEV);
-+    const auto& gains = member->observations.colorCorrectionGains;
-+    const float g0 = gains.usable() ? (*gains.value)[1] : 1.0F;
-+    const float g1 = gains.usable() ? (*gains.value)[2] : 1.0F;
-+    const float mean = 0.5F * (g0 + g1);
-+    const float requestedMean = 0.5F * (color.whiteBalanceGains[1] + color.whiteBalanceGains[2]);
-+    if (!std::isfinite(mean) || mean <= 0.0F || !std::isfinite(requestedMean) || requestedMean <= 0.0F) {
-+        throw std::invalid_argument("invalid scene green calibration");
-+    }
-+    // Both ratios lie in [0,2]. Eight FP32 epsilons cover independent normalized
-+    // gain rounding, not a license to alter the reference green calibration.
-+    if (std::abs(g0 / mean - color.whiteBalanceGains[1] / requestedMean) >
-+        8.0F * std::numeric_limits<float>::epsilon()) {
-+        throw std::invalid_argument("scene white balance disagrees with reference green normalization");
-+    }
-+    JointSceneResult result{};
-+    SceneSink sink(result, grid.extent, color);
-+    result.trace = reconstructRawTiles(burst, source, grid, policy, caps, sink, motion,
-+        referenceId, std::move(continueExecution));
-+    auto lineage = std::make_shared<imaging::ImageLineage>();
-+    lineage->burst = burst.id;
-+    lineage->sequence = burst.sequence;
-+    lineage->calibration = burst.calibration;
-+    lineage->reference = result.trace.reference;
-+    lineage->inputs.reserve(burst.members.size());
-+    for (const auto& m : burst.members) lineage->inputs.push_back(m.id);
-+    result.scene.lineage = std::move(lineage);
-+    result.scene.sourceRawId = burst.members.size() == 1U ? referenceId.value : 0U;
-+    result.scene.sceneScaleEV = color.sceneScaleEV;
-+    result.scene.whiteBalanceConfidence = color.whiteBalanceConfidence;
-+    // Conditional bounds stay in their own evidence vector; the single-RAW lazy
-+    // shot/read/demosaic model is deliberately left invalid.
-+    return result;
-+}
-+
-+}  // namespace latent::runtime
-diff --git a/tests/test_joint_scene.cpp b/tests/test_joint_scene.cpp
-new file mode 100644
-index 0000000..f55ec00
---- /dev/null
-+++ b/tests/test_joint_scene.cpp
-@@ -0,0 +1,313 @@
-+#include "latent/runtime/JointScene.h"
-+#include "latent/render/ReferenceRenderer.h"
-+#include "latent/testing/SyntheticRaw.h"
-+
-+#include <algorithm>
-+#include <array>
-+#include <cmath>
-+#include <iostream>
-+#include <limits>
-+#include <stdexcept>
-+
-+using namespace latent;
-+namespace {
-+std::size_t checks = 0;
-+void check(bool condition, const char* message) {
-+    ++checks;
-+    if (!condition) throw std::runtime_error(message);
-+}
-+template<class F> void rejects(F&& f, const char* message) {
-+    bool threw = false;
-+    try { f(); } catch (const std::exception&) { threw = true; }
-+    check(threw, message);
-+}
-+void close(double actual, double expected, double tolerance, const char* message) {
-+    check(std::isfinite(actual) && std::abs(actual - expected) <= tolerance, message);
-+}
-+reference::ReconstructionConfig colorConfig() {
-+    reference::ReconstructionConfig c{};
-+    c.cameraToAcescg.values = {1.1F, -0.2F, 0.1F, -0.1F, 1.3F, -0.2F, 0.1F, -0.3F, 1.2F};
-+    c.whiteBalanceGains = {2.0F, 1.0F, 1.0F, 1.5F};
-+    c.sceneScaleEV = 2;
-+    c.whiteBalanceConfidence = 0.75F;
-+    return c;
-+}
-+std::array<double, 3> expectedColor(const std::array<float, 4>& rgb,
-+    const reference::ReconstructionConfig& c) {
-+    const std::array<double, 3> gains{c.whiteBalanceGains[0],
-+        (static_cast<double>(c.whiteBalanceGains[1]) + c.whiteBalanceGains[2]) / 2, c.whiteBalanceGains[3]};
-+    std::array<double, 3> result{};
-+    for (std::size_t j = 0; j < 3; ++j) {
-+        for (std::size_t k = 0; k < 3; ++k) result[j] += static_cast<double>(c.cameraToAcescg.values[j * 3 + k]) * gains[k] * rgb[k];
-+        result[j] *= std::exp2(static_cast<double>(c.sceneScaleEV));
-+    }
-+    return result;
-+}
-+void tileColorAndBounds() {
-+    const auto c = colorConfig();
-+    std::array<reference::ReconstructedPixel, 2> pixels{};
-+    pixels[0].rgb = {-0.25F, 0.5F, 1.5F, 0};
-+    pixels[1].rgb = {1.25F, -0.1F, 0.3F, 0};
-+    for (auto& p : pixels) { p.confidence = {1, 0.2F, 0.01F, 0}; p.variance = {0.04F, 0.01F, 0.09F, 0}; }
-+    std::array<float, 6> rgb{}, variance{};
-+    reference::finishDirectSceneTile(pixels, c, rgb, variance);
-+    for (std::size_t i = 0; i < pixels.size(); ++i) {
-+        const auto expected = expectedColor(pixels[i].rgb, c);
-+        for (std::size_t channel = 0; channel < 3; ++channel) {
-+            // Independent double-precision matrix oracle vs sequential FP32 WB,
-+            // matrix accumulation and scene scale: five rounded operations.
-+            close(rgb[i * 3 + channel], expected[channel], 2e-6 * std::max(1.0, std::abs(expected[channel])), "camera to scene color composition");
-+            // Enumerate every perfectly correlated +/- noise realization. The
-+            // worst realization must attain the bound, not a diagonal-only sum.
-+            double maximum = 0;
-+            for (unsigned signs = 0; signs < 8; ++signs) {
-+                std::array<float, 4> perturbation{};
-+                for (std::size_t k = 0; k < 3; ++k) perturbation[k] = std::sqrt(pixels[i].variance[k]) * ((signs & (1U << k)) ? 1.0F : -1.0F);
-+                const double delta = expectedColor(perturbation, c)[channel];
-+                maximum = std::max(maximum, delta * delta);
-+            }
-+            close(variance[i * 3 + channel], maximum, 2e-6 * maximum, "unknown cross-channel covariance upper bound");
-+        }
-+    }
-+    check(rgb[0] < 0 && rgb[2] > 1, "negative and above-nominal scene coordinates preserved");
-+    for (const float gain : {0.0001F, 0.03125F, 3.5F, 64.0F}) {
-+        auto scaled = pixels;
-+        for (auto& p : scaled) for (std::size_t k = 0; k < 3; ++k) { p.rgb[k] *= gain; p.variance[k] *= gain * gain; }
-+        std::array<float, 6> scaledRgb{}, scaledVariance{};
-+        reference::finishDirectSceneTile(scaled, c, scaledRgb, scaledVariance);
-+        for (std::size_t k = 0; k < rgb.size(); ++k) {
-+            close(scaledRgb[k] / gain, rgb[k], 4e-6, "finishing intensity-scale equivariance");
-+            close(scaledVariance[k] / (gain * gain), variance[k], 4e-6, "finishing variance-square scaling");
-+        }
-+    }
-+    auto noNoise = c; noNoise.propagateNoise = false;
-+    std::array<float, 6> justRgb{};
-+    reference::finishDirectSceneTile(pixels, noNoise, justRgb, {});
-+    check(justRgb == rgb, "uncertainty storage policy cannot change image intent");
-+}
-+// Composition with the OLD CFA->demosaic->scene boundary on a constant
-+// spectral field. Both legitimate DNG matrix routes must resolve identically;
-+// this catches a bypass of the canonical resolver or a second white balance.
-+void dngComposition() {
-+    for (bool forward : {false, true}) {
-+        auto c = colorConfig(); c.colorPath = reference::ColorPath::DngProfile;
-+        c.dngProfile.colorMatrix1.values = {0.8F, 0.1F, 0.05F, 0.02F, 1.0F, 0.03F, 0.1F, 0.04F, 1.1F};
-+        c.dngProfile.colorMatrix2 = c.dngProfile.colorMatrix1;
-+        c.dngProfile.forwardMatricesPresent = forward;
-+        if (forward) {
-+            const auto d50 = imaging::xyToXyz(imaging::kIlluminantD50);
-+            c.dngProfile.forwardMatrix1.values = {d50[0], 0, 0, 0, d50[1], 0, 0, 0, d50[2]};
-+            c.dngProfile.forwardMatrix2 = c.dngProfile.forwardMatrix1;
-+        }
-+        reference::SensorLinearFrameF32 sensor{}; sensor.extent = {12, 10};
-+        sensor.samples.resize(sensor.extent.pixelCount());
-+        constexpr std::array<float, 4> camera{-0.1F, 0.3F, 1.2F, 0};
-+        const auto sampling = imaging::regularSampling(sensor.extent, sensor.cfa);
-+        for (std::uint32_t y = 0; y < sensor.extent.height; ++y) for (std::uint32_t x = 0; x < sensor.extent.width; ++x) {
-+            const auto channel = imaging::samplingChannelAt(sampling, x, y);
-+            const std::size_t rgbChannel = channel == imaging::CfaChannel::R ? 0U : channel == imaging::CfaChannel::B ? 2U : 1U;
-+            sensor.samples[static_cast<std::size_t>(y) * sensor.extent.width + x] = camera[rgbChannel];
-+        }
-+        reference::ReconstructedPixel p{}; p.rgb = camera; p.confidence = {1, 1, 1, 0};
-+        std::array<float, 3> direct{}, variance{};
-+        reference::finishDirectSceneTile(std::span(&p, 1), c, direct, variance);
-+        const auto legacy = reference::reconstructSensorLinear(sensor, c);
-+        for (std::uint32_t y = 3; y + 3 < sensor.extent.height; ++y) for (std::uint32_t x = 3; x + 3 < sensor.extent.width; ++x) {
-+            const auto index = (static_cast<std::size_t>(y) * sensor.extent.width + x) * 3U;
-+            for (std::size_t k = 0; k < 3; ++k) close(direct[k], legacy.image.rgb[index + k], 4e-6 * std::max(1.0F, std::abs(direct[k])),
-+                "DNG direct finishing equals existing demosaic color boundary on constant spectral field");
-+        }
-+    }
-+}
-+void invalidTiles() {
-+    auto c = colorConfig();
-+    reference::ReconstructedPixel p{}; p.rgb = {0.2F, 0.3F, 0.4F, 0}; p.confidence = {1, 1, 1, 0};
-+    std::array<float, 3> rgb{}, variance{};
-+    const auto finish = [&] { reference::finishDirectSceneTile(std::span(&p, 1), c, rgb, variance); };
-+    const auto good = p;
-+    for (const float bad : {std::numeric_limits<float>::quiet_NaN(), std::numeric_limits<float>::infinity()}) {
-+        p = good; p.rgb[0] = bad; rejects(finish, "non-finite camera color rejected");
-+        p = good; p.variance[1] = bad; rejects(finish, "non-finite camera variance rejected");
-+        p = good; p.confidence[2] = bad; rejects(finish, "non-finite camera coverage rejected");
-+    }
-+    p = good; p.confidence[2] = 0; rejects(finish, "missing camera color cannot become scene black");
-+    p = good; p.variance[1] = -0.1F; rejects(finish, "negative variance rejected");
-+    p = good;
-+    c.applyLensShading = true; rejects(finish, "duplicate shading rejected"); c.applyLensShading = false;
-+    c.defectCorrection = reference::DefectCorrectionMode::FromMetadataMap; rejects(finish, "duplicate defect correction rejected");
-+    c = colorConfig(); c.colorPath = static_cast<reference::ColorPath>(255); rejects(finish, "unknown color path rejected");
-+    c = colorConfig(); c.colorPath = reference::ColorPath::DngProfile; c.dngProfile.analogBalance[0] = 0; rejects(finish, "invalid DNG calibration rejected");
-+    c = colorConfig(); c.sceneScaleEV = -1000; rejects(finish, "underflow to zero is not a scene coordinate");
-+    c.sceneScaleEV = 1000; rejects(finish, "scene coordinate overflow rejected");
-+    c = colorConfig(); c.whiteBalanceGains[0] = 0; rejects(finish, "invalid WB rejected");
-+    c = colorConfig(); c.whiteBalanceGains[1] = c.whiteBalanceGains[2] = std::numeric_limits<float>::max();
-+    rejects(finish, "common green overflow rejected before silently changing color");
-+    c = colorConfig(); p.rgb[0] = std::numeric_limits<float>::max(); rejects(finish, "color arithmetic overflow rejected");
-+    p = good; p.variance[0] = std::numeric_limits<float>::max(); rejects(finish, "variance bound overflow rejected");
-+    p = good;
-+    rejects([&] { reference::finishDirectSceneTile(std::span(&p, 1), c, std::span(rgb).first(2), variance); }, "scene extent mismatch rejected");
-+    rejects([&] { reference::finishDirectSceneTile(std::span(&p, 1), c, rgb, {}); }, "missing requested uncertainty rejected");
-+    rejects([&] { reference::finishDirectSceneTile({}, c, {}, {}); }, "empty finishing tile rejected");
-+}
-+runtime::ReconstructionCapabilities caps() {
-+    runtime::ReconstructionCapabilities c{};
-+#ifdef LATENT_JOINT_TEST_VULKAN
-+    c.preferVulkan = true;
-+#endif
-+    return c;
-+}
-+void checkDomains(const runtime::JointSceneResult& r, const imaging::RawBurst& b) {
-+    const auto& s = r.scene;
-+    check(s.reference == imaging::ReferenceDomain::Scene && s.primaries == imaging::Primaries::ACEScgAP1 &&
-+        s.whitePoint == imaging::WhitePoint::D60 && s.transfer == imaging::TransferFunction::Linear &&
-+        s.range == imaging::RangeSemantics::Unbounded && s.allowNegative, "scene domain invariants");
-+    check(!s.propagatedNoise.valid, "conditional variance must not become single-frame affine noise");
-+    check(s.lineage && s.lineage->burst == b.id && s.lineage->sequence == b.sequence &&
-+        s.lineage->calibration == b.calibration && s.lineage->reference == r.trace.reference, "scene provenance identity");
-+    check(s.lineage->inputs.size() == b.members.size(), "lineage keeps all captured frames");
-+    for (std::size_t i = 0; i < b.members.size(); ++i) check(s.lineage->inputs[i] == b.members[i].id, "lineage preserves capture order");
-+    check(s.lineage->contributions.empty(), "unmeasured contribution counts stay unavailable");
-+    check(s.sourceRawId == (b.members.size() == 1 ? r.trace.reference.value : 0), "no scalar multi-frame provenance");
-+#ifdef LATENT_JOINT_TEST_VULKAN
-+    check(r.trace.plan.vulkan, "required real Vulkan reconstruction path");
-+#endif
-+}
-+void latticeSceneComposition() {
-+    // Different CFA order, grouped period and origin are resolved ONLY by RAW
-+    // normalization. Scene finishing sees no Bayer parity or sensor mode enum.
-+    const auto color = colorConfig();
-+    double maxDifference = 0;
-+    for (std::uint32_t group = 1; group <= 4; ++group) for (unsigned phase = 0; phase < 4; ++phase) {
-+        auto b = testing::syntheticBurst({19, 17}, 3, group, group, static_cast<imaging::CfaPattern>(phase), 3, 1, 0, 0.00001F);
-+        const auto m = testing::translations(3);
-+        const testing::Signal signal = [](float x, float y, std::size_t c, std::size_t) {
-+            return 0.14F + 0.07F * static_cast<float>(c) + 0.04F * std::sin(0.3F * x) + 0.03F * std::cos(0.2F * y);
++void nativeGridPhaseEvidence() {
++    double worstRatio=0;
++    for(float frequency:{0.35F,0.60F})for(unsigned axis=0;axis<2;++axis)for(std::size_t active=0;active<3;++active) {
++        const Signal signal=[=](float x,float y,std::size_t c) {
++            return 0.3F+0.1F*static_cast<float>(c)+(c==active?0.1F*std::sin(2*pi*frequency*(axis?y:x)):0.0F);
 +        };
-+        testing::SyntheticRawSource source(b, m, signal);
-+        const float step = phase % 2U ? 0.5F : 1.0F;
-+        const runtime::ReconstructionGrid grid{step == 0.5F ? imaging::Extent{37, 33} : b.extent, 0, 0, step, step};
-+        runtime::TiledReconstructionPolicy p{}; p.tileSize = 16; p.maximumDisplacement = 4;
-+        p.kernel = reference::DirectKernelPolicy::superResolution();
-+        const auto scene = runtime::reconstructRawScene(b, source, grid, b.members[0].id, color, p, caps(), m);
-+        checkDomains(scene, b);
-+        check(scene.scene.image.extent == grid.extent && scene.scene.sceneScaleEV == color.sceneScaleEV &&
-+            scene.scene.whiteBalanceConfidence == color.whiteBalanceConfidence, "explicit scene request survives reconstruction");
-+        check(scene.trace.plan.sinkResidentBytes == scene.scene.image.rgb.capacity() * sizeof(float) +
-+            scene.conditionalVarianceUpperBound.capacity() * sizeof(float), "all materialized outputs charged to sink");
-+        testing::ImageSink camera(grid.extent);
-+        (void)runtime::reconstructRawTiles(b, source, grid, p, {}, camera, m, b.members[0].id);
-+        for (std::size_t i = 0; i < camera.pixels.size(); ++i) {
-+            const auto expected = expectedColor(camera.pixels[i].rgb, color);
-+            for (std::size_t c = 0; c < 3; ++c) {
-+                const double difference = std::abs(scene.scene.image.rgb[3 * i + c] - expected[c]);
-+                maxDifference = std::max(maxDifference, difference);
-+                // Existing CPU/Vulkan camera budget 3e-5 propagated by absolute
-+                // WB/color row norm and sceneScale; do not assume cancellation.
-+                double rowGain = 0;
-+                const std::array<double, 3> wb{color.whiteBalanceGains[0], 1.0, color.whiteBalanceGains[3]};
-+                for (std::size_t k = 0; k < 3; ++k) rowGain += std::abs(color.cameraToAcescg.values[3 * c + k]) * wb[k] * 4;
-+                close(scene.scene.image.rgb[3 * i + c], expected[c], 3e-5 * rowGain, "direct RAW to scene vs independent color composition");
-+                // Propagate the EXISTING per-camera variance differential
-+                // interval through the monotone covariance-bound formula. This
-+                // accounts for sqrt sensitivity near zero without enlarging the
-+                // raw oracle budget (1e-7 + 1e-3 * variance).
-+                double sigma = 0, lowerSigma = 0, upperSigma = 0;
-+                for (std::size_t k = 0; k < 3; ++k) {
-+                    const double v = camera.pixels[i].variance[k];
-+                    const double error = 1e-7 + 1e-3 * v;
-+                    const double factor = std::abs(color.cameraToAcescg.values[3 * c + k]) * wb[k] * 4;
-+                    sigma += factor * std::sqrt(v);
-+                    lowerSigma += factor * std::sqrt(std::max(0.0, v - error));
-+                    upperSigma += factor * std::sqrt(v + error);
-+                }
-+                const double value = scene.conditionalVarianceUpperBound[3 * i + c];
-+                const double roundoff = 4e-6 * sigma * sigma;
-+                check(std::isfinite(value) && value >= std::max(0.0, lowerSigma * lowerSigma - roundoff) &&
-+                    value <= upperSigma * upperSigma + roundoff, "CPU/Vulkan scene variance interval composition");
-+            }
-+        }
++        const auto f=fixture(signal,cartesian());
++        const auto joint=reconstruct(f,reference::DirectKernelPolicy::superResolution());
++        const auto collapsed=nativeGridBaseline(f);
++        const double jointError=mse(f,joint,signal),collapsedError=mse(f,collapsed,signal);
++        const double ratio=jointError/collapsedError;worstRatio=std::max(worstRatio,ratio);
++        std::cout<<"joint-vs-native frequency="<<frequency<<" axis="<<axis<<" color="<<active
++            <<" joint_mse="<<jointError<<" fused_demosaic_upscale_mse="<<collapsedError<<" ratio="<<ratio<<'\n';
++        check(jointError<collapsedError,"fractional RAW evidence must beat actual native FusedRaw collapse on independent color stripes");
++        for(const auto& pixel:joint)for(std::size_t c=0;c<3;++c)if(c!=active)
++            check(std::abs(pixel.rgb[c]-(0.3F+0.1F*static_cast<float>(c)))<2e-5F,"independent color stripe must not contaminate flat spectral axes");
 +    }
-+    std::cout << "joint-scene composition_max_abs=" << maxDifference << '\n';
++    std::cout<<"joint-vs-native worst_mse_ratio="<<worstRatio<<'\n';
 +}
-+void tilingRenderingAndLineage() {
-+    const auto b = testing::syntheticBurst({35, 29}, 5, 2, 2, imaging::CfaPattern::GBRG, 1, 3);
-+    auto motion = testing::translations(5);
-+    // Explicitly choose a reference beyond the budget prefix; its observations
-+    // remain reference coordinates and the untouched burst remains provenance.
-+    motion[4].affine = {1, 0, 0, 0, 1, 0};
-+    testing::SyntheticRawSource source(b, motion);
-+    const runtime::ReconstructionGrid grid{{39, 31}, 4, 3, 0.75F, 0.75F};
-+    runtime::TiledReconstructionPolicy p{}; p.tileSize = 16; p.maximumDisplacement = 4; p.maximumFrames = 3;
-+    const auto c = colorConfig();
-+    const auto tiled = runtime::reconstructRawScene(b, source, grid, b.members[4].id, c, p, caps(), motion);
-+    p.tileSize = 64;
-+    const auto full = runtime::reconstructRawScene(b, source, grid, b.members[4].id, c, p, caps(), motion);
-+    checkDomains(tiled, b); checkDomains(full, b);
-+    check(tiled.scene.image.rgb == full.scene.image.rgb && tiled.conditionalVarianceUpperBound == full.conditionalVarianceUpperBound,
-+        "tiled scene and variance are seam-free including odd extents and non-2x grid");
-+    check(imaging::sameLineage(tiled.scene.lineage, full.scene.lineage), "tiling cannot alter provenance");
-+    check(tiled.trace.plan.frames == 3 && tiled.scene.lineage->inputs.size() == 5, "reduced execution retains excluded input identities");
-+    const auto copy = tiled.scene.image.rgb;
-+    const auto sdr = render::renderReference(tiled.scene, render::makeSdrRenderConfig());
-+    const auto hdr = render::renderReference(tiled.scene, render::makeHdrPqRenderConfig());
-+    check(imaging::sameLineage(sdr.lineage, tiled.scene.lineage) && imaging::sameLineage(hdr.lineage, tiled.scene.lineage), "rendered SDR/HDR preserve joint RAW lineage");
-+    check(tiled.scene.image.rgb == copy, "rendering leaves scene master unchanged");
-+    for (float x : sdr.image.rgb) check(std::isfinite(x), "finite SDR rendition");
-+    for (float x : hdr.image.rgb) check(std::isfinite(x), "finite HDR rendition");
-+    auto shifted = c; shifted.sceneScaleEV += 1;
-+    const auto other = runtime::reconstructRawScene(b, source, grid, b.members[4].id, shifted, p, caps(), motion);
-+    const auto otherSdr = render::renderReference(other.scene, render::makeSdrRenderConfig());
-+    for (std::size_t i = 0; i < sdr.image.rgb.size(); ++i) close(otherSdr.image.rgb[i], sdr.image.rgb[i], 2e-6, "scene representation coordinate is not render exposure");
-+}
-+class CountingSource final : public runtime::RawTileSource {
-+public:
-+    explicit CountingSource(runtime::RawTileSource& source) : source_(source) {}
-+    void read(imaging::FrameId id, imaging::SensorRect r, std::span<std::uint16_t> out) override { ++reads; source_.read(id, r, out); }
-+    std::uint64_t residentBytes() const override { return source_.residentBytes(); }
-+    std::size_t reads = 0;
-+private:
-+    runtime::RawTileSource& source_;
-+};
-+void calibrationAndFailure() {
-+    auto b = testing::syntheticBurst({29, 25}, 1);
-+    b.members[0].observations.colorCorrectionGains = {std::array<float, 4>{2, 1.25F, 1.0F / 1.2F, 1.5F},
-+        imaging::MetadataSource::MeasuredCalibration, imaging::MetadataValidity::Valid, 1};
-+    const auto m = testing::translations(1);
-+    const testing::Signal flat = [](float, float, std::size_t c, std::size_t) { return std::array<float, 3>{0.11F, 0.18F, 0.29F}[c]; };
-+    testing::SyntheticRawConfig raw{}; raw.greenResponse = {0.8F, 1.2F};
-+    testing::SyntheticRawSource source(b, m, flat, raw); CountingSource counted(source);
-+    runtime::ReconstructionGrid grid{b.extent};
-+    runtime::TiledReconstructionPolicy p{}; p.maximumDisplacement = 4; p.tileSize = 16;
-+    reference::ReconstructionConfig color{};
-+    rejects([&] { (void)runtime::reconstructRawScene(b, counted, grid, b.members[0].id, color, p, caps(), m); }, "inconsistent green calibration rejected");
-+    check(counted.reads == 0, "calibration mismatch rejected before RAW reads");
-+    color.whiteBalanceGains = *b.members[0].observations.colorCorrectionGains.value;
-+    auto budget = caps(); budget.hostBudgetBytes = b.extent.pixelCount() * 24U;
-+    rejects([&] { (void)runtime::reconstructRawScene(b, counted, grid, b.members[0].id, color, p, budget, m); }, "output and arena jointly admitted");
-+    check(counted.reads == 0, "memory rejection precedes RAW reads");
-+    rejects([&] { (void)runtime::reconstructRawScene(b, counted, grid, imaging::FrameId{99}, color, p, caps(), m); }, "missing reference rejected");
-+    const auto scene = runtime::reconstructRawScene(b, counted, grid, b.members[0].id, color, p, caps(), m);
-+    checkDomains(scene, b);
-+    check(scene.trace.kernel.quadraticStrength == 0, "K1 remains Gaussian not claimed SR");
-+    for (std::size_t i = 0; i < scene.scene.image.rgb.size(); ++i) close(scene.scene.image.rgb[i], std::array<double, 3>{0.22, 0.18, 0.435}[i % 3], 4e-4,
-+        "unequal greens balanced before fusion and common green applied once");
-+    color.propagateNoise = false;
-+    const auto without = runtime::reconstructRawScene(b, counted, grid, b.members[0].id, color, p, caps(), m);
-+    check(without.conditionalVarianceUpperBound.empty() && without.scene.image.rgb == scene.scene.image.rgb, "optional scene variance does not change RGB");
-+    std::size_t checkpoints = 0;
-+    rejects([&] { (void)runtime::reconstructRawScene(b, counted, grid, b.members[0].id, color, p, caps(), m,
-+        [&] { return ++checkpoints < 4; }); }, "cancellation discards incomplete scene");
-+    const testing::Signal clipped = [](float, float, std::size_t, std::size_t) { return 2.0F; };
-+    testing::SyntheticRawSource saturated(b, m, clipped);
-+    rejects([&] { (void)runtime::reconstructRawScene(b, saturated, grid, b.members[0].id, color, p, caps(), m); }, "all-clipped burst cannot supply a scene");
-+    testing::ImageSink rawResult(grid.extent);
-+    const auto trace = runtime::reconstructRawTiles(b, saturated, grid, p, {}, rawResult, m, b.members[0].id);
-+    check(trace.invalidChannels == grid.extent.pixelCount() * 3U, "camera-linear evidence still available with explicit invalid mask");
-+}
-+}
-+int main() {
-+    try {
-+        tileColorAndBounds(); dngComposition(); invalidTiles(); latticeSceneComposition(); tilingRenderingAndLineage(); calibrationAndFailure();
-+        std::cout << "joint-scene checks=" << checks << '\n'; return 0;
-+    } catch (const std::exception& e) { std::cerr << "joint-scene failure: " << e.what() << '\n'; return 1; }
-+}
+ void homogeneityAndSignedValues() {
+     const Signal signal=[](float x,float y,std::size_t c){return -0.12F+0.25F*static_cast<float>(c)+0.08F*std::sin(x*0.7F+y*0.3F);};
+     auto f=fixture(signal,cartesian(),1e-5F);
+@@ -332,7 +404,7 @@ int main() {
+         }
+         probe.reset();
+ #endif
+-        srQuality();homogeneityAndSignedValues();phaseAndAxisControls();spatialNoiseDebias();for(unsigned mode=0;mode<3;++mode)conditionalNoise(mode);sparseColorBorders();runtimeTilingAndValidation();
++        srQuality();nativeGridPhaseEvidence();homogeneityAndSignedValues();phaseAndAxisControls();spatialNoiseDebias();for(unsigned mode=0;mode<3;++mode)conditionalNoise(mode);sparseColorBorders();runtimeTilingAndValidation();
+ #ifdef LATENT_JOINT_TEST_VULKAN
+         std::cout<<"joint CPU/GPU max_scaled_signal_error="<<maxBackendError<<'\n';
+ #endif
