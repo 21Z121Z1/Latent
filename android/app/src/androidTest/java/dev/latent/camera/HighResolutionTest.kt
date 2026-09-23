@@ -70,6 +70,21 @@ class HighResolutionTest {
         } finally { directory.deleteRecursively() }
     }
 
+    @Test fun storageAdmissionUsesActualPrivateVolume() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val directory = File(context.filesDir, "storage-admission-${System.nanoTime()}").apply { check(mkdirs()) }
+        try {
+            val requested = 1024L * 1024
+            assertTrue(admitCaptureStorage(context, directory, requested) >= requested)
+            var rejected = false
+            try { admitCaptureStorage(context, directory, Long.MAX_VALUE) } catch (_: IllegalArgumentException) { rejected = true }
+            assertTrue("Insufficient disk must fail before allocation", rejected)
+            rejected = false
+            try { admitCaptureStorage(context, directory, -1) } catch (_: IllegalArgumentException) { rejected = true }
+            assertTrue("Invalid admission size rejected", rejected)
+        } finally { directory.deleteRecursively() }
+    }
+
     @Test fun unknownGroupingFailsClosed() {
         val m = mode(2, 0, 32)
         // JNI observation corruption is rejected before any reconstruction allocation.

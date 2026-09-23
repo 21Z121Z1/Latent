@@ -28,6 +28,7 @@ import android.os.HandlerThread
 import android.os.PowerManager
 import android.os.Looper
 import android.os.SystemClock
+import android.os.storage.StorageManager
 import android.util.Size
 import java.io.File
 import java.io.FileOutputStream
@@ -38,6 +39,21 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
 import org.json.JSONArray
 import org.json.JSONObject
+
+/** Worker-thread volume admission, not an exclusive file reservation. Later I/O
+ * can still fail (other apps race for space); capture records that failure.
+ * StorageManager may reclaim cache to satisfy this explicit capture allocation.
+ */
+internal fun admitCaptureStorage(context: Context, directory: File, requiredBytes: Long): Long {
+    check(Looper.myLooper() != Looper.getMainLooper()) { "Storage admission must not block the main thread" }
+    require(directory.isDirectory && requiredBytes > 0)
+    val storage = context.getSystemService(StorageManager::class.java)
+    val volume = storage.getUuidForPath(directory)
+    val allocatable = storage.getAllocatableBytes(volume)
+    require(allocatable >= requiredBytes) { "Insufficient debug bundle disk space" }
+    storage.allocateBytes(volume, requiredBytes)
+    return allocatable
+}
 
 /** Opt-in developer backend. Raw-only session, one outstanding request, immediate
  * disk spooling: no burst of full-resolution Image leases or FP32 frames in RAM.
@@ -103,10 +119,12 @@ internal class HighResolutionCapture(private val context: Context) {
             // conservative admission, followed by measured PSS; not a zero-copy claim.
             require(!memory.lowMemory && rawBytes * 4 + o.reconstructionBudgetBytes < memory.availMem / 2) { "Insufficient capture + reconstruction headroom" }
             val diskBytes = rawBytes * o.frames * 2 + o.size.width.toLong() * o.size.height * 64 + if (o.dumpDng) rawBytes * o.frames else 0
-            require(directory.usableSpace > diskBytes + 64L * 1024 * 1024) { "Insufficient debug bundle disk space" }
+            val requiredDiskBytes = Math.addExact(diskBytes, 64L * 1024 * 1024)
+            val allocatableDiskBytes = admitCaptureStorage(context, directory, requiredDiskBytes)
             manifest.put("admission", JSONObject().put("availableRamBytes", memory.availMem)
                 .put("rawPlaneBytes", rawBytes).put("imageReaderMaxImages", 2).put("diskEstimateBytes", diskBytes)
-                .put("reconstructionBudgetBytes", o.reconstructionBudgetBytes))
+                .put("reconstructionBudgetBytes", o.reconstructionBudgetBytes)
+                .put("requestedDiskBytes", requiredDiskBytes).put("allocatableDiskBytesAtAdmission", allocatableDiskBytes))
             val rawReader = ImageReader.newInstance(o.size.width, o.size.height, ImageFormat.RAW_SENSOR, 2)
             reader = rawReader
             rawReader.setOnImageAvailableListener({ input ->
